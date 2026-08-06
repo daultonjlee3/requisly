@@ -1,26 +1,597 @@
 @import "tailwindcss";
+@import "../styles/requisly.css";
 
+/* Prefer next/font variables over the Google Fonts @import in the design CSS */
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --font-display: var(--font-display-loaded), "Space Grotesk", sans-serif;
+  --font-body: var(--font-body-loaded), Inter, sans-serif;
+  --font-mono: var(--font-mono-loaded), "IBM Plex Mono", monospace;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html,
+body {
+  min-height: 100%;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.supplier-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--accent-wash);
+  color: var(--accent-ink);
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.stat-mini {
+  text-align: center;
+  padding: 12px 8px;
+}
+.stat-mini .num {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+}
+.stat-mini .label {
+  font-size: 11px;
+  color: var(--ink-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 2px;
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 13px;
+}
+.kv .k {
+  color: var(--ink-faint);
+}
+.kv .v {
+  font-weight: 500;
+}
+
+.li-table th,
+.li-table td {
+  padding: 9px 10px;
+}
+.li-table input {
+  width: 100%;
+  border: 1px solid transparent;
+  background: transparent;
+  padding: 5px 6px;
+  border-radius: 4px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--ink);
+}
+.li-table input:hover {
+  border-color: var(--line-strong);
+}
+.li-table input:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--paper-raised);
+  box-shadow: 0 0 0 3px var(--accent-wash);
+}
+.li-table .num {
+  text-align: right;
+  font-family: var(--font-mono);
+}
+.add-row-btn {
+  width: 100%;
+  padding: 10px;
+  border: 1.5px dashed var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink-faint);
+  font-size: 12.5px;
+  font-weight: 600;
+  margin-top: 10px;
+  cursor: pointer;
+}
+.add-row-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.supplier-shell {
+  max-width: 520px;
+  margin: 0 auto;
+  min-height: 100vh;
+  background: var(--paper-raised);
+  box-shadow: var(--shadow-lg);
+}
+.supplier-header {
+  background: var(--ink);
+  color: #fff;
+  padding: 28px 24px 22px;
+}
+.supplier-header .from {
+  font-size: 12px;
+  color: #9aa0c4;
+  margin-bottom: 4px;
+}
+.supplier-header h1 {
+  font-family: var(--font-display);
+  font-size: 21px;
+  margin: 0 0 2px;
+}
+.supplier-header .sub {
+  font-size: 12.5px;
+  color: #c7cae0;
+}
+.supplier-body {
+  padding: 22px 24px 40px;
+}
+.action-card {
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  padding: 18px;
+  margin-bottom: 16px;
+}
+.action-card h4 {
+  font-family: var(--font-display);
+  font-size: 14.5px;
+  margin: 0 0 12px;
+}
+.li-mini {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+.li-mini:last-child {
+  border-bottom: none;
+}
+.confirmed-banner {
+  background: var(--status-confirmed-wash);
+  color: var(--status-confirmed);
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  font-size: 13.5px;
+  margin-bottom: 20px;
+}
+.footer-note {
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  margin-top: 24px;
+}
+.breadcrumb {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
+}
+.breadcrumb a {
+  color: var(--ink-faint);
+}
+.breadcrumb a:hover {
+  color: var(--accent);
+}
+.receive-table th,
+.receive-table td {
+  padding: 11px 12px;
+}
+.receive-table input[type="number"] {
+  width: 68px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  text-align: right;
+}
+.reason-select {
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--font-body);
+  background: var(--paper-raised);
+}
+.qty-ok {
+  color: var(--status-confirmed);
+  font-weight: 600;
+}
+.qty-short {
+  color: var(--status-alert);
+  font-weight: 600;
+}
+.copy-box {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  background: var(--paper);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* ---------- PO view toggle + Kanban (Phase 1) ---------- */
+
+.view-toggle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  background: var(--paper-sunk);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+}
+
+.view-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 3px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-faint);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.view-toggle-btn:hover {
+  color: var(--ink);
+}
+
+.view-toggle-btn.active {
+  background: var(--paper-raised);
+  color: var(--ink);
+  box-shadow: var(--shadow-sm);
+}
+
+.kanban-board {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding-bottom: 8px;
+  align-items: stretch;
+  min-height: calc(100vh - 180px);
+}
+
+.kanban-column {
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper-sunk);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  min-height: 320px;
+  max-height: calc(100vh - 180px);
+}
+
+.kanban-column-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-raised);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.kanban-column-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.kanban-column-label {
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.kanban-optional {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+}
+
+.kanban-column-body {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.kanban-empty {
+  padding: 16px 8px;
+  text-align: center;
+}
+
+.kanban-card {
+  display: block;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  padding: 12px;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  cursor: pointer;
+}
+
+.kanban-card:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow-md);
+}
+
+/* ---------- PO Calendar month view ---------- */
+
+.po-calendar {
+  overflow: hidden;
+}
+
+.po-calendar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.po-calendar-weekdays {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.po-calendar-weekday {
+  padding: 8px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-faint);
+}
+
+.po-calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+}
+
+.po-calendar-cell {
+  min-height: 128px;
+  padding: 8px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--paper-raised);
+}
+
+.po-calendar-cell:nth-child(7n) {
+  border-right: none;
+}
+
+.po-calendar-cell.empty {
+  background: var(--paper);
+  min-height: 128px;
+}
+
+.po-calendar-cell.today {
+  background: var(--accent-wash);
+}
+
+.po-calendar-daynum {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+
+.po-calendar-cell.today .po-calendar-daynum {
+  color: var(--accent-ink);
+}
+
+.po-calendar-events {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.po-calendar-card {
+  padding: 8px;
+}
+
+.po-calendar-card .chip {
+  transform: scale(0.9);
+  transform-origin: right center;
+}
+
+@media (max-width: 900px) {
+  .po-calendar-cell,
+  .po-calendar-cell.empty {
+    min-height: 96px;
+  }
+  .po-calendar-card .small,
+  .po-calendar-card .between:last-child {
+    display: none;
+  }
+}
+
+/* ---------- Products on-hand ---------- */
+
+.on-hand-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 96px;
+}
+
+.on-hand-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.on-hand-loc {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 110px;
+}
+
+.on-hand-qty {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Effective-dated pricing — restrained scheduled-change note */
+.price-change-note {
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--ink-faint);
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.schedule-price-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.schedule-price-form.compact {
+  min-width: 280px;
+}
+
+.schedule-price-form.stack-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: stretch;
+}
+
+.schedule-price-form .field {
+  padding: 6px 8px;
+  font-size: 12.5px;
+}
+
+.product-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  object-fit: cover;
+  background: var(--paper-sunk);
+  border: 1px solid var(--line);
+  flex-shrink: 0;
+  display: block;
+}
+
+.product-thumb-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--ink-faint);
+}
+
+.catalog-group + .catalog-group {
+  border-top: 1px solid var(--line);
+}
+
+.catalog-group-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+}
+
+.catalog-group-header .title {
+  font-family: var(--font-display);
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.catalog-group-header .retail {
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  font-weight: 500;
+}
+
+.catalog-group table {
+  margin: 0;
+}
+
+.add-supplier-product-form {
+  display: grid;
+  grid-template-columns: 1.4fr 0.9fr 0.8fr 0.9fr 0.7fr 0.7fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.add-supplier-product-form .field {
+  padding: 6px 8px;
+  font-size: 12.5px;
+}
+
+@media (max-width: 960px) {
+  .add-supplier-product-form {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.detail-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.detail-tab {
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-faint);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+
+.detail-tab:hover {
+  color: var(--ink);
+}
+
+.detail-tab.active {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
 }

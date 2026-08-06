@@ -1,36 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Requisly
 
-## Getting Started
+Purchase-order platform for Shopify brands. The Purchase Order is the primary object — suppliers, documents, timeline, receiving, and analytics hang off it.
 
-First, run the development server:
+See `PRODUCT-ROADMAP.md` for vision and phase gates, `PHASE-0-BUILD-PLAN.md` for schema and milestones, `design/` for visual reference (read-only), and `docs/STATE-MACHINE.md` for PO status rules.
+
+## Stack
+
+- **Frontend:** Next.js (App Router), TypeScript, Tailwind
+- **Backend:** Supabase (Postgres, Auth, Storage, RLS, Edge Functions)
+- **Hosting:** Vercel (frontend) + Supabase Edge Functions (Shopify / Supplier Link)
+
+## Milestone 1 status
+
+Auth + workspace scaffold:
+
+- Migration: `supabase/migrations/20260805120000_workspaces_profiles.sql`
+- Sign up / sign in
+- Authenticated shell matching `design/index.html` sidebar + topbar
+
+## Setup
+
+1. Create a Supabase project (or use your existing **requisly** project).
+2. In the Supabase SQL editor, run the full contents of  
+   `supabase/migrations/20260805120000_workspaces_profiles.sql`.
+3. Copy `.env.example` → `.env.local` and fill in Project URL + anon key from  
+   **Project Settings → API**.
+4. In Supabase Auth settings, add redirect URL: `http://localhost:3000/auth/callback`  
+   (and disable email confirmation for local speed if you want).
+5. Install and run:
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+6. Open `http://localhost:3000`, create a workspace, and you should land on Today's Work.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Repo layout
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+/design/                 Visual + UX reference — READ-ONLY
+/docs/STATE-MACHINE.md   Authoritative PO status rules
+/supabase/migrations/    SQL to apply manually in Supabase
+/src/                    Next.js app
+PHASE-0-BUILD-PLAN.md
+PRODUCT-ROADMAP.md
+```
 
-## Learn More
+## Credentials still needed from you
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Supabase Project URL + anon key (for `.env.local`)
+- Later milestones: Shopify Partner app credentials, Resend/Postmark for send email
