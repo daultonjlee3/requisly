@@ -17,6 +17,14 @@
 /.next/
 /out/
 
+# embedded Remix / Shopify app
+/embedded/node_modules/
+/embedded/.cache/
+/embedded/build/
+/embedded/prisma/dev.sqlite
+/embedded/prisma/dev.sqlite-journal
+/embedded/.shopify/
+
 # production
 /build
 

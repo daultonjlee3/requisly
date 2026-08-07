@@ -1,9 +1,10 @@
 import Link from "next/link";
 import { OnHandCell, type OnHandByLocation } from "@/components/OnHandCell";
 import { ProductThumb } from "@/components/ProductThumb";
+import { ResyncShopifyButton } from "@/components/ResyncShopifyButton";
 import { ScheduledPriceNote } from "@/components/ScheduledPriceNote";
 import { Topbar } from "@/components/shell/Topbar";
-import { money } from "@/lib/format";
+import { money, relativeTime } from "@/lib/format";
 import {
   currentPriceLabel,
   marginLabel,
@@ -75,7 +76,12 @@ function groupCatalog(
   );
 }
 
-export default async function ProductsPage() {
+export default async function ProductsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ shopify?: string; sync?: string; message?: string }>;
+}) {
+  const { shopify, sync, message } = await searchParams;
   const { workspace } = await getSessionContext();
   const supabase = await createClient();
   const workspaceId = workspace!.id;
@@ -90,7 +96,7 @@ export default async function ProductsPage() {
   ] = await Promise.all([
     supabase
       .from("workspaces")
-      .select("id, name, shopify_domain")
+      .select("id, name, shopify_domain, shopify_synced_at")
       .eq("id", workspaceId)
       .maybeSingle(),
     supabase
@@ -181,12 +187,31 @@ export default async function ProductsPage() {
         title="Products"
         subline="On-hand inventory + per-supplier pricing"
         actions={
-          <Link href="/products/new" className="btn btn-primary">
-            Add supplier product
-          </Link>
+          <>
+            {shopConnected ? <ResyncShopifyButton /> : null}
+            <Link href="/products/new" className="btn btn-primary">
+              Add supplier product
+            </Link>
+          </>
         }
       />
       <div className="content stack" style={{ gap: 24 }}>
+        {shopify === "connected" ? (
+          <div className="demo-banner">
+            <strong>
+              {sync === "ok"
+                ? "Shopify connected — catalog synced"
+                : "Shopify connected"}
+            </strong>
+            <span>
+              {sync === "error"
+                ? message ||
+                  "Token saved, but the first sync hit an error. Use Resync Shopify."
+                : `Store linked to ${workspaceRow?.shopify_domain ?? "this workspace"}.`}
+            </span>
+          </div>
+        ) : null}
+
         {!shopConnected ? (
           <div className="demo-banner">
             <strong>Shopify not connected</strong>
@@ -194,8 +219,24 @@ export default async function ProductsPage() {
               On-hand quantities come from synced Shopify inventory. Until a
               store is connected, we show “Not connected” — not a fake zero.
             </span>
+            <Link href="/onboarding" className="btn btn-primary btn-sm">
+              Connect Shopify
+            </Link>
           </div>
-        ) : null}
+        ) : (
+          <div className="between">
+            <p className="small muted" style={{ margin: 0 }}>
+              Connected as{" "}
+              <span className="mono">{workspaceRow?.shopify_domain}</span>
+              {workspaceRow?.shopify_synced_at
+                ? ` · last sync ${relativeTime(workspaceRow.shopify_synced_at)}`
+                : ""}
+            </p>
+            <Link href="/onboarding" className="small">
+              Connection details
+            </Link>
+          </div>
+        )}
 
         <section className="stack" style={{ gap: 12 }}>
           <div className="between">
@@ -218,18 +259,16 @@ export default async function ProductsPage() {
                 </p>
                 <p className="small muted" style={{ margin: "0 0 16px" }}>
                   {shopConnected
-                    ? "Variants and on-hand levels will appear here after catalog/inventory sync."
+                    ? "Use Resync Shopify above, or reconnect from onboarding."
                     : "Connect a Shopify store to pull variants and on-hand inventory. Until then, build your supplier catalog below — free-text products work without Shopify."}
                 </p>
                 {!shopConnected ? (
-                  <span
-                    className="btn btn-secondary"
-                    style={{ opacity: 0.55, cursor: "default" }}
-                    title="Shopify OAuth comes later"
-                  >
-                    Connect Shopify — coming later
-                  </span>
-                ) : null}
+                  <Link href="/onboarding" className="btn btn-primary">
+                    Connect Shopify →
+                  </Link>
+                ) : (
+                  <ResyncShopifyButton />
+                )}
               </div>
             ) : (
               <table>

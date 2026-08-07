@@ -504,6 +504,75 @@ button:disabled {
   font-size: 12.5px;
 }
 
+/* Onboarding / Connect Shopify (design/onboarding.html) */
+.onboard-card {
+  width: 100%;
+  max-width: 460px;
+  background: var(--paper-raised);
+  border-radius: 14px;
+  box-shadow: var(--shadow-lg);
+  padding: 36px 32px 30px;
+}
+.onboard-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 26px;
+  justify-content: center;
+}
+.step-dots {
+  display: flex;
+  gap: 6px;
+  justify-content: center;
+  margin-top: 22px;
+}
+.step-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+.step-dot.active {
+  background: var(--accent);
+  width: 18px;
+  border-radius: 3px;
+}
+.connect-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1.5px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  margin-bottom: 12px;
+}
+.shopify-mark {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: #95bf47;
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+.permission-list {
+  margin: 18px 0;
+}
+.permission-item {
+  display: flex;
+  gap: 10px;
+  padding: 7px 0;
+  font-size: 13px;
+}
+.permission-item .check {
+  color: var(--status-confirmed);
+  font-weight: 700;
+}
+
 .product-thumb {
   width: 36px;
   height: 36px;

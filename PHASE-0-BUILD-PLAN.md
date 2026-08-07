@@ -251,8 +251,8 @@ create policy "workspace isolation" on suppliers
 
 | Function | Purpose | Auth |
 |---|---|---|
-| `shopify-oauth-callback` | Completes Shopify OAuth, stores access token, kicks off initial sync | Session |
-| `shopify-sync-catalog` | Pulls products/variants/locations from Shopify Admin API | Session or cron |
+| `shopify-oauth-callback` | Completes Shopify OAuth, stores access token, kicks off initial sync | Public (Shopify redirect; HMAC + signed state) |
+| `shopify-sync-catalog` | Pulls products/variants/locations/inventory from Shopify Admin API | Session (manual Resync) |
 | `send-po-email` | Generates PDF, sends branded email with Supplier Link to supplier | Session |
 | `supplier-link-action` | Validates token, lets supplier confirm ship date / mark shipped — writes a `po_timeline_events` row | Token only, no session |
 | `complete-receiving` | Writes a receipt + line items, and pushes inventory adjustments back to Shopify | Session |

@@ -25,6 +25,31 @@ type LineItem = {
   is_free_text: boolean;
 };
 
+type ShipmentLine = {
+  po_line_item_id: string;
+  description: string;
+  qty: number;
+};
+
+type Shipment = {
+  id: string;
+  tracking_number: string | null;
+  carrier: string | null;
+  estimated_arrival_date: string | null;
+  shipped_at: string;
+  note: string | null;
+  created_by: string;
+  lines: ShipmentLine[];
+};
+
+type DocumentMeta = {
+  id: string;
+  file_name: string;
+  file_type: string | null;
+  kind: string;
+  created_at: string;
+};
+
 type LinkPayload = {
   po: {
     id: string;
@@ -37,12 +62,15 @@ type LinkPayload = {
     requested_ship_date: string | null;
     confirmed_ship_date: string | null;
     estimated_arrival_date: string | null;
+    confirmation_stale?: boolean;
     created_at: string;
   };
   supplier: { name: string; email: string };
   workspace: { name: string };
   line_items: LineItem[];
   pending_proposals?: PendingProposal[];
+  shipments?: Shipment[];
+  documents?: DocumentMeta[];
 };
 
 type LineProposalDraft = {
@@ -52,6 +80,21 @@ type LineProposalDraft = {
   note: string;
 };
 
+function documentKindLabel(kind: string) {
+  switch (kind) {
+    case "po_pdf":
+      return "PO PDF";
+    case "invoice":
+      return "Invoice";
+    case "packing_slip":
+      return "Packing slip";
+    case "other":
+      return "Other";
+    default:
+      return "Document";
+  }
+}
+
 export function SupplierLinkClient({ token }: { token: string }) {
   const [data, setData] = useState<LinkPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +102,10 @@ export function SupplierLinkClient({ token }: { token: string }) {
   const [tracking, setTracking] = useState("");
   const [carrier, setCarrier] = useState("UPS");
   const [estimatedArrival, setEstimatedArrival] = useState("");
+  const [shipmentNote, setShipmentNote] = useState("");
+  const [shipmentLineQtys, setShipmentLineQtys] = useState<
+    Record<string, string>
+  >({});
   const [rejectNote, setRejectNote] = useState("");
   const [showReject, setShowReject] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, LineProposalDraft>>({});
@@ -84,6 +131,13 @@ export function SupplierLinkClient({ token }: { token: string }) {
       parsed.po.confirmed_ship_date || parsed.po.requested_ship_date || "",
     );
     setEstimatedArrival(parsed.po.estimated_arrival_date || "");
+    setShipmentLineQtys((prev) => {
+      const next: Record<string, string> = {};
+      for (const line of parsed.line_items) {
+        next[line.id] = prev[line.id] ?? "";
+      }
+      return next;
+    });
     setDrafts((prev) => {
       const next: Record<string, LineProposalDraft> = {};
       for (const line of parsed.line_items) {
@@ -115,6 +169,15 @@ export function SupplierLinkClient({ token }: { token: string }) {
       applyPayload(payload as LinkPayload);
       setMessage(successMessage);
       setShowReject(false);
+      if (name === "supplier_link_add_shipment" || name === "supplier_link_ship") {
+        setTracking("");
+        setShipmentNote("");
+        setShipmentLineQtys((prev) => {
+          const cleared: Record<string, string> = {};
+          for (const id of Object.keys(prev)) cleared[id] = "";
+          return cleared;
+        });
+      }
     });
   }
 
@@ -122,20 +185,33 @@ export function SupplierLinkClient({ token }: { token: string }) {
     runRpc(
       "supplier_link_confirm",
       { p_token: token, p_ship_date: shipDate || null },
-      "Ship date confirmed. Production stays optional — mark shipped when ready.",
+      data?.po.confirmation_stale
+        ? "Fresh confirmation recorded for the updated order."
+        : "Ship date confirmed. Production stays optional — mark shipped when ready.",
     );
   }
 
-  function markShipped() {
+  function reportShipment() {
+    const lines = Object.entries(shipmentLineQtys)
+      .map(([po_line_item_id, qtyStr]) => ({
+        po_line_item_id,
+        qty: Number(qtyStr),
+      }))
+      .filter((l) => l.qty > 0 && !Number.isNaN(l.qty));
+
     runRpc(
-      "supplier_link_ship",
+      "supplier_link_add_shipment",
       {
         p_token: token,
         p_tracking: tracking || null,
         p_carrier: carrier || null,
         p_estimated_arrival_date: estimatedArrival || null,
+        p_note: shipmentNote.trim() || null,
+        p_lines: lines,
       },
-      "Marked shipped.",
+      lines.length
+        ? "Shipment reported with line quantities."
+        : "Shipment reported.",
     );
   }
 
@@ -166,7 +242,8 @@ export function SupplierLinkClient({ token }: { token: string }) {
       .filter(
         (c) =>
           (c.proposed_qty != null && !Number.isNaN(c.proposed_qty)) ||
-          (c.proposed_unit_cost != null && !Number.isNaN(c.proposed_unit_cost)),
+          (c.proposed_unit_cost != null &&
+            !Number.isNaN(c.proposed_unit_cost)),
       );
 
     if (!changes.length) {
@@ -207,6 +284,7 @@ export function SupplierLinkClient({ token }: { token: string }) {
   }
 
   const rejected = data.po.status === "rejected";
+  const confirmationStale = Boolean(data.po.confirmation_stale);
   const confirmed = [
     "confirmed",
     "production",
@@ -216,18 +294,22 @@ export function SupplierLinkClient({ token }: { token: string }) {
     "received",
     "closed",
   ].includes(data.po.status);
-  const shipped = [
-    "shipped",
-    "in_transit",
-    "partially_received",
-    "received",
-    "closed",
-  ].includes(data.po.status);
-  const canAct = !rejected && !shipped && !["closed", "received"].includes(data.po.status);
+  const closedOut = ["closed", "received", "rejected"].includes(data.po.status);
+  const canShip =
+    !closedOut &&
+    ["confirmed", "production", "shipped", "in_transit", "partially_received"].includes(
+      data.po.status,
+    );
+  const showConfirmCard =
+    !rejected &&
+    !closedOut &&
+    (confirmationStale || ["sent", "viewed"].includes(data.po.status));
   const canPropose = !rejected && ["sent", "viewed"].includes(data.po.status);
   const pendingByLine = new Map(
     (data.pending_proposals ?? []).map((p) => [p.po_line_item_id, p]),
   );
+  const shipments = data.shipments ?? [];
+  const documents = data.documents ?? [];
 
   return (
     <div className="supplier-shell">
@@ -253,7 +335,21 @@ export function SupplierLinkClient({ token }: { token: string }) {
           </div>
         ) : null}
 
-        {confirmed && !rejected ? (
+        {confirmationStale && !rejected ? (
+          <div
+            className="confirmed-banner"
+            style={{
+              background: "var(--status-alert-wash)",
+              color: "var(--status-alert)",
+              marginBottom: 16,
+            }}
+          >
+            The buyer edited this PO after you confirmed. Please review the
+            current quantities and confirm again.
+          </div>
+        ) : null}
+
+        {confirmed && !rejected && !confirmationStale ? (
           <div className="confirmed-banner">
             ✓ You confirmed this order
             {data.po.confirmed_ship_date
@@ -289,12 +385,19 @@ export function SupplierLinkClient({ token }: { token: string }) {
           </span>
         </div>
 
-        {canAct && !confirmed ? (
+        {showConfirmCard ? (
           <div
             className="action-card"
-            style={{ borderColor: "var(--accent)", background: "var(--accent-wash)" }}
+            style={{
+              borderColor: "var(--accent)",
+              background: "var(--accent-wash)",
+            }}
           >
-            <h4 style={{ color: "var(--accent-ink)" }}>Update this order</h4>
+            <h4 style={{ color: "var(--accent-ink)" }}>
+              {confirmationStale
+                ? "Re-confirm updated order"
+                : "Update this order"}
+            </h4>
             <div className="stack" style={{ gap: 12 }}>
               <div>
                 <label
@@ -317,7 +420,9 @@ export function SupplierLinkClient({ token }: { token: string }) {
                 onClick={confirm}
                 style={{ justifyContent: "center" }}
               >
-                Confirm ship date
+                {confirmationStale
+                  ? "Confirm updated order"
+                  : "Confirm ship date"}
               </button>
             </div>
           </div>
@@ -363,7 +468,10 @@ export function SupplierLinkClient({ token }: { token: string }) {
                       </span>
                     </label>
                     {existing ? (
-                      <div className="chip chip-sent" style={{ marginBottom: 8 }}>
+                      <div
+                        className="chip chip-sent"
+                        style={{ marginBottom: 8 }}
+                      >
                         <span className="chip-dot" />
                         Pending proposal
                       </div>
@@ -442,9 +550,15 @@ export function SupplierLinkClient({ token }: { token: string }) {
           </div>
         ) : null}
 
-        {confirmed && !rejected ? (
+        {canShip ? (
           <div className="action-card">
-            <h4>Mark as shipped</h4>
+            <h4>
+              {shipments.length > 0 ? "Report another shipment" : "Mark as shipped"}
+            </h4>
+            <p className="small muted" style={{ marginTop: 0 }}>
+              Partial shipments are fine — each report keeps its own tracking
+              and ETA.
+            </p>
             <div className="stack" style={{ gap: 12 }}>
               <div>
                 <label className="field-label">
@@ -455,7 +569,6 @@ export function SupplierLinkClient({ token }: { token: string }) {
                   placeholder="e.g. 1Z8894F2039481"
                   value={tracking}
                   onChange={(e) => setTracking(e.target.value)}
-                  disabled={shipped}
                 />
               </div>
               <div>
@@ -466,7 +579,6 @@ export function SupplierLinkClient({ token }: { token: string }) {
                   className="field"
                   value={carrier}
                   onChange={(e) => setCarrier(e.target.value)}
-                  disabled={shipped}
                 >
                   <option>UPS</option>
                   <option>FedEx</option>
@@ -477,32 +589,156 @@ export function SupplierLinkClient({ token }: { token: string }) {
               </div>
               <div>
                 <label className="field-label">
-                  Estimated arrival{" "}
-                  <span className="muted">(optional)</span>
+                  Estimated arrival <span className="muted">(optional)</span>
                 </label>
                 <input
                   type="date"
                   className="field"
                   value={estimatedArrival}
                   onChange={(e) => setEstimatedArrival(e.target.value)}
-                  disabled={shipped}
                 />
+              </div>
+              <div>
+                <label className="field-label">
+                  Note <span className="muted">(optional)</span>
+                </label>
+                <input
+                  className="field"
+                  placeholder="e.g. Cartons 1–3 of 6"
+                  value={shipmentNote}
+                  onChange={(e) => setShipmentNote(e.target.value)}
+                />
+              </div>
+              <div>
+                <label className="field-label">
+                  Line quantities in this shipment{" "}
+                  <span className="muted">(optional)</span>
+                </label>
+                <div className="stack" style={{ gap: 8 }}>
+                  {data.line_items.map((line) => (
+                    <div
+                      key={line.id}
+                      className="row between"
+                      style={{ gap: 8, alignItems: "center" }}
+                    >
+                      <span className="small">
+                        {line.description}{" "}
+                        <span className="muted">ordered × {line.qty}</span>
+                      </span>
+                      <input
+                        className="field"
+                        style={{ width: 88 }}
+                        inputMode="numeric"
+                        placeholder="Qty"
+                        value={shipmentLineQtys[line.id] ?? ""}
+                        onChange={(e) =>
+                          setShipmentLineQtys((prev) => ({
+                            ...prev,
+                            [line.id]: e.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
               <button
                 type="button"
                 className="btn btn-secondary"
                 style={{ justifyContent: "center" }}
-                disabled={pending || shipped}
-                onClick={markShipped}
+                disabled={pending}
+                onClick={reportShipment}
               >
-                {shipped ? "Already shipped" : "Mark shipped"}
+                {shipments.length > 0 ? "Add shipment" : "Mark shipped"}
               </button>
             </div>
           </div>
         ) : null}
 
+        {shipments.length > 0 ? (
+          <div className="action-card">
+            <h4>Shipment history</h4>
+            <div className="stack" style={{ gap: 14 }}>
+              {shipments.map((shipment, index) => (
+                <div
+                  key={shipment.id}
+                  style={{
+                    paddingTop: index === 0 ? 0 : 12,
+                    borderTop: index === 0 ? undefined : "1px solid var(--line)",
+                  }}
+                >
+                  <div className="row between" style={{ marginBottom: 4 }}>
+                    <span style={{ fontWeight: 600 }}>
+                      Shipment {shipments.length - index}
+                    </span>
+                    <span className="small muted">
+                      {shortDate(shipment.shipped_at)}
+                    </span>
+                  </div>
+                  <div className="small">
+                    {shipment.carrier || "Carrier —"}
+                    {shipment.tracking_number
+                      ? ` · ${shipment.tracking_number}`
+                      : " · No tracking"}
+                  </div>
+                  {shipment.estimated_arrival_date ? (
+                    <div className="small muted">
+                      ETA {shortDate(shipment.estimated_arrival_date)}
+                    </div>
+                  ) : null}
+                  {shipment.note ? (
+                    <div className="small">{shipment.note}</div>
+                  ) : null}
+                  {shipment.lines?.length ? (
+                    <div className="stack" style={{ gap: 4, marginTop: 6 }}>
+                      {shipment.lines.map((line) => (
+                        <div
+                          key={`${shipment.id}-${line.po_line_item_id}`}
+                          className="small muted"
+                        >
+                          {line.description} × {line.qty}
+                        </div>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {documents.length > 0 ? (
+          <div className="action-card">
+            <h4>Documents</h4>
+            <div className="stack" style={{ gap: 10 }}>
+              {documents.map((doc) => (
+                <div key={doc.id} className="row between" style={{ gap: 8 }}>
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{doc.file_name}</div>
+                    <div className="small muted">
+                      {documentKindLabel(doc.kind)} ·{" "}
+                      {shortDate(doc.created_at)}
+                    </div>
+                  </div>
+                  <a
+                    className="btn btn-secondary"
+                    href={`/api/supplier-link/document?token=${encodeURIComponent(token)}&documentId=${encodeURIComponent(doc.id)}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Download
+                  </a>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         {canPropose ? (
-          <div className="action-card" style={{ borderColor: "var(--status-alert)" }}>
+          <div
+            className="action-card"
+            style={{ borderColor: "var(--status-alert)" }}
+          >
             <h4 style={{ color: "var(--status-alert)" }}>Reject this order</h4>
             {!showReject ? (
               <button

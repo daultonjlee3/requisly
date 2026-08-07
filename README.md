@@ -6,9 +6,23 @@ See `PRODUCT-ROADMAP.md` for vision and phase gates, `PHASE-0-BUILD-PLAN.md` for
 
 ## Stack
 
-- **Frontend:** Next.js (App Router), TypeScript, Tailwind
+- **Merchant app (pivot in progress):** Remix + Polaris + App Bridge in `/embedded` — see `EMBEDDED-PIVOT-PLAN.md`
+- **Legacy merchant UI (still present):** Next.js (App Router) in `/src` — not deleted yet
+- **Supplier Link:** Custom Manifest & Stamp UI (unchanged by the embedded pivot)
 - **Backend:** Supabase (Postgres, Auth, Storage, RLS, Edge Functions)
-- **Hosting:** Vercel (frontend) + Supabase Edge Functions (Shopify / Supplier Link)
+- **Hosting:** Vercel + Supabase Edge Functions
+
+### Embedded app (step 1 scaffold)
+
+```bash
+cd embedded
+npm install
+npx prisma migrate deploy
+npm run config:link   # link Partner app + fill client_id
+npm run dev           # shopify app dev → install on your store
+```
+
+Or from repo root: `npm run dev:embedded`.
 
 ## Milestone 1 status
 
