@@ -13,23 +13,36 @@ import {
   BlockStack,
   Button,
   Card,
+  EmptyState,
   FormLayout,
   IndexTable,
+  InlineGrid,
   InlineStack,
   Page,
   Tabs,
   Text,
   TextField,
+  Tooltip,
 } from "@shopify/polaris";
+import { ChartVerticalIcon } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useCallback, useState } from "react";
+import { SectionHeading } from "../components/SectionHeading";
 import { SupplierContactsPanel } from "../components/SupplierContactsPanel";
 import { SupplierProductsPanel } from "../components/SupplierProductsPanel";
+import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
 import { getMerchantContext } from "../lib/merchant.server";
 import {
   linkShopifyVariantsToSupplier,
   listShopifyVariantsForPicker,
 } from "../lib/products.server";
+import {
+  SCORECARD_MIN_COMPLETED_POS,
+  daysLabel,
+  loadSupplierScorecardExport,
+  pctLabel,
+  spendLabel,
+} from "../lib/supplier-scorecard.server";
 import {
   addSupplierContact,
   deleteSupplierContact,
@@ -45,10 +58,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const merchant = await getMerchantContext(request, {
     sync: onProductsTab ? "auto" : false,
   });
-  const supplier = await getSupplierDetail(
-    merchant.workspace.id,
-    params.id ?? "",
-  );
+  const supplierId = params.id ?? "";
+  const [supplier, scorecard] = await Promise.all([
+    getSupplierDetail(merchant.workspace.id, supplierId),
+    loadSupplierScorecardExport(merchant.workspace.id, supplierId),
+  ]);
   if (!supplier) throw new Response("Not found", { status: 404 });
 
   const shopifyVariants = onProductsTab
@@ -57,6 +71,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   return {
     supplier,
+    scorecard,
     shopifyVariants,
     syncError: merchant.syncError,
   };
@@ -134,7 +149,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function SupplierDetail() {
-  const { supplier, shopifyVariants, syncError } =
+  const { supplier, scorecard, shopifyVariants, syncError } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -161,6 +176,17 @@ export default function SupplierDetail() {
 
   const primary =
     supplier.contacts.find((c) => c.isPrimary) ?? supplier.contacts[0];
+
+  const exportReady = Boolean(scorecard?.ready);
+  const exportButton = (
+    <Button
+      url={`/app/suppliers/${supplier.id}/scorecard`}
+      target="_blank"
+      disabled={!exportReady}
+    >
+      Export Scorecard
+    </Button>
+  );
 
   return (
     <Page
@@ -192,6 +218,67 @@ export default function SupplierDetail() {
           </Banner>
         ) : null}
 
+        <Card>
+          <BlockStack gap="300">
+            <InlineStack align="space-between" blockAlign="center">
+              <SectionHeading
+                title="Performance"
+                icon={ChartVerticalIcon}
+                subtitle={`From ${scorecard?.completedPos ?? 0} closed POs${
+                  exportReady
+                    ? ""
+                    : ` · unlocks at ${SCORECARD_MIN_COMPLETED_POS}`
+                }`}
+              />
+              {exportReady ? (
+                exportButton
+              ) : (
+                <Tooltip content="Not enough order history yet">
+                  <span>{exportButton}</span>
+                </Tooltip>
+              )}
+            </InlineStack>
+            <InlineGrid columns={4} gap="400">
+              <BlockStack gap="100">
+                <Text as="span" tone="subdued" variant="bodySm">
+                  On-time %
+                </Text>
+                <Text as="p" variant="headingLg">
+                  {exportReady ? pctLabel(scorecard?.onTimePct) : "—"}
+                </Text>
+              </BlockStack>
+              <BlockStack gap="100">
+                <Text as="span" tone="subdued" variant="bodySm">
+                  Fill rate
+                </Text>
+                <Text as="p" variant="headingLg">
+                  {exportReady ? pctLabel(scorecard?.fillRate) : "—"}
+                </Text>
+              </BlockStack>
+              <BlockStack gap="100">
+                <Text as="span" tone="subdued" variant="bodySm">
+                  Avg lead variance
+                </Text>
+                <Text as="p" variant="headingLg">
+                  {exportReady
+                    ? daysLabel(scorecard?.avgLeadTimeVarianceDays)
+                    : "—"}
+                </Text>
+              </BlockStack>
+              <BlockStack gap="100">
+                <Text as="span" tone="subdued" variant="bodySm">
+                  Closed spend
+                </Text>
+                <Text as="p" variant="headingLg">
+                  {exportReady
+                    ? spendLabel(scorecard?.closedSpend ?? 0)
+                    : "—"}
+                </Text>
+              </BlockStack>
+            </InlineGrid>
+          </BlockStack>
+        </Card>
+
         <Tabs
           tabs={[
             { id: "orders", content: `Orders (${supplier.orders.length})` },
@@ -204,14 +291,24 @@ export default function SupplierDetail() {
           onSelect={onTabChange}
         >
           {tab === 0 ? (
-            <Card padding="0">
-              {supplier.orders.length === 0 ? (
-                <BlockStack gap="200">
-                  <Text as="p" tone="subdued">
-                    No purchase orders for this supplier yet.
-                  </Text>
-                </BlockStack>
-              ) : (
+            supplier.orders.length === 0 ? (
+              <Card>
+                <EmptyState
+                  heading="No orders with this supplier yet"
+                  image={EMPTY_STATE_IMAGE.orders}
+                  action={{
+                    content: "New PO",
+                    url: `/app/purchase-orders/new?supplier=${supplier.id}`,
+                  }}
+                >
+                  <p>
+                    Create a purchase order to start building history and
+                    scorecards for this supplier.
+                  </p>
+                </EmptyState>
+              </Card>
+            ) : (
+              <Card padding="0">
                 <IndexTable
                   resourceName={{ singular: "order", plural: "orders" }}
                   itemCount={supplier.orders.length}
@@ -247,8 +344,8 @@ export default function SupplierDetail() {
                     </IndexTable.Row>
                   ))}
                 </IndexTable>
-              )}
-            </Card>
+              </Card>
+            )
           ) : (
             <SupplierProductsPanel
               supplierId={supplier.id}

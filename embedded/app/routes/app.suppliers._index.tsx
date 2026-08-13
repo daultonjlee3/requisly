@@ -9,6 +9,7 @@ import {
   Text,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
+import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
 import { getMerchantContext } from "../lib/merchant.server";
 import { listSuppliers } from "../lib/suppliers.server";
 
@@ -34,7 +35,7 @@ export default function SuppliersList() {
           <EmptyState
             heading="No suppliers yet"
             action={{ content: "Add supplier", url: "/app/suppliers/new" }}
-            image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+            image={EMPTY_STATE_IMAGE.suppliers}
           >
             <p>Add a supplier before creating purchase orders.</p>
           </EmptyState>

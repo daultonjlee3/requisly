@@ -22,6 +22,8 @@ export type DashboardData = {
   arrivingToday: DashRow[];
   overdue: DashRow[];
   recentUpdates: TimelineRow[];
+  /** False until the workspace has created at least one PO. */
+  hasAnyPurchaseOrders: boolean;
   /** Set when any dashboard query failed — never treat as a genuine empty board. */
   loadError: string | null;
 };
@@ -50,6 +52,7 @@ export async function loadDashboard(
       arrivingToday: [],
       overdue: [],
       recentUpdates: [],
+      hasAnyPurchaseOrders: false,
       loadError:
         error?.message ??
         "Forced dashboard query failure (development diagnostic).",
@@ -62,6 +65,7 @@ export async function loadDashboard(
     readyRes,
     overdueRes,
     updatesRes,
+    anyPoRes,
   ] = await Promise.all([
     supabase
       .from("purchase_orders")
@@ -106,6 +110,11 @@ export async function loadDashboard(
       .in("actor", ["supplier", "system"])
       .order("occurred_at", { ascending: false })
       .limit(8),
+    supabase
+      .from("purchase_orders")
+      .select("id", { count: "exact", head: true })
+      .eq("workspace_id", workspaceId)
+      .limit(1),
   ]);
 
   const failures = [
@@ -114,6 +123,7 @@ export async function loadDashboard(
     readyRes.error && `ready: ${readyRes.error.message}`,
     overdueRes.error && `overdue: ${overdueRes.error.message}`,
     updatesRes.error && `updates: ${updatesRes.error.message}`,
+    anyPoRes.error && `anyPo: ${anyPoRes.error.message}`,
   ].filter(Boolean) as string[];
 
   if (failures.length) {
@@ -123,6 +133,7 @@ export async function loadDashboard(
       arrivingToday: [],
       overdue: [],
       recentUpdates: [],
+      hasAnyPurchaseOrders: false,
       loadError: failures.join(" · "),
     };
   }
@@ -135,6 +146,7 @@ export async function loadDashboard(
 
   return {
     loadError: null,
+    hasAnyPurchaseOrders: (anyPoRes.count ?? 0) > 0,
     waitingConfirmation: waitingConfirmation.map((po) => ({
       id: po.id,
       href: `/app/purchase-orders/${po.id}`,

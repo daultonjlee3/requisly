@@ -1,0 +1,16 @@
+---
+description: Hard Polaris-only UI compliance for the Shopify embedded app (App Store).
+globs: embedded/**/*
+alwaysApply: false
+---
+
+# Embedded app: Polaris-only UI
+
+Hard constraint for everything under `embedded/`:
+
+- Use **only** `@shopify/polaris` components, Polaris design tokens, and Polaris CSS custom properties (`--p-*`).
+- App Bridge React is allowed where required for embedding.
+- **No** custom CSS/CSS modules, custom colors/fonts, hand-built non-Polaris UI, or raw inline styles.
+- Compose Polaris primitives when a single component does not exist (e.g. timeline).
+- If Polaris cannot express something, **flag the gap to the user** — do not invent custom markup/styling.
+- If unsure whether something is still Polaris-compliant, stop and ask.

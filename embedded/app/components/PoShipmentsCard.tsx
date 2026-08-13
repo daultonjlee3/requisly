@@ -4,11 +4,13 @@ import {
   Button,
   Card,
   FormLayout,
+  Icon,
   InlineStack,
   Select,
   Text,
   TextField,
 } from "@shopify/polaris";
+import { DeliveryIcon } from "@shopify/polaris-icons";
 import { useState } from "react";
 import type { PoShipment } from "../lib/shipments.server";
 
@@ -45,14 +47,18 @@ export function PoShipmentsCard({ shipments, lineItems, canAdd }: Props) {
     <Card>
       <BlockStack gap="400">
         <InlineStack align="space-between" blockAlign="center" wrap>
-          <BlockStack gap="100">
-            <Text as="h2" variant="headingMd">
-              Shipments
-            </Text>
-            <Text as="p" variant="bodySm" tone="subdued">
-              Partial shipments each keep their own tracking, carrier, and ETA.
-            </Text>
-          </BlockStack>
+          <InlineStack gap="200" blockAlign="start" wrap={false}>
+            <Icon source={DeliveryIcon} tone="base" />
+            <BlockStack gap="100">
+              <Text as="h2" variant="headingMd">
+                Shipments
+              </Text>
+              <Text as="p" variant="bodySm" tone="subdued">
+                Partial shipments each keep their own tracking, carrier, and
+                ETA.
+              </Text>
+            </BlockStack>
+          </InlineStack>
           {canAdd && !open ? (
             <Button onClick={() => setOpen(true)}>Add shipment</Button>
           ) : null}

@@ -20,6 +20,7 @@ import {
   PoViewToggle,
   resolvePoView,
 } from "../components/PoViewToggle";
+import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
 import { getMerchantContext } from "../lib/merchant.server";
 import { listPurchaseOrders } from "../lib/purchase-orders.server";
 import { listSuppliers } from "../lib/suppliers.server";
@@ -208,7 +209,7 @@ export default function PurchaseOrdersList() {
                 content: "New PO",
                 url: "/app/purchase-orders/new",
               }}
-              image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+              image={EMPTY_STATE_IMAGE.orders}
             >
               <p>Clear filters or create a new purchase order.</p>
             </EmptyState>

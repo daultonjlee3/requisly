@@ -77,7 +77,7 @@ function RuleCard({
           <Text as="h2" variant="headingMd">
             {rule.title}
           </Text>
-          <Text as="p" tone="subdued">
+          <Text as="p" tone="subdued" variant="bodyMd">
             {rule.description}
           </Text>
           <Checkbox
@@ -140,7 +140,7 @@ export default function NotificationsSettings() {
             </Box>
             {settings.log.length === 0 ? (
               <Box padding="400">
-                <Text as="p" tone="subdued">
+                <Text as="p" tone="subdued" variant="bodyMd">
                   No notification emails logged yet. Cron still runs from the
                   Next.js / Edge side.
                 </Text>

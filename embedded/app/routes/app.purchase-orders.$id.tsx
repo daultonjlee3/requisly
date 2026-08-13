@@ -14,6 +14,7 @@ import {
   DataTable,
   DescriptionList,
   FormLayout,
+  Icon,
   InlineStack,
   Layout,
   Page,
@@ -21,6 +22,13 @@ import {
   Text,
   TextField,
 } from "@shopify/polaris";
+import {
+  CashDollarIcon,
+  OrderIcon,
+  PackageIcon,
+  PersonIcon,
+  ProductIcon,
+} from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useState } from "react";
 import { PendingProposalsPanel } from "../components/PendingProposalsPanel";
@@ -376,9 +384,12 @@ export default function PurchaseOrderDetail() {
         <Card>
           <BlockStack gap="400">
             <InlineStack align="space-between" blockAlign="center">
-              <Text as="h2" variant="headingMd">
-                Workflow
-              </Text>
+              <InlineStack gap="200" blockAlign="center">
+                <Icon source={OrderIcon} tone="base" />
+                <Text as="h2" variant="headingMd">
+                  Workflow
+                </Text>
+              </InlineStack>
               <Badge tone={po.statusTone}>{po.statusLabel}</Badge>
             </InlineStack>
             <ProgressBar progress={po.progress} size="small" />
@@ -420,10 +431,13 @@ export default function PurchaseOrderDetail() {
               <Card>
                 <BlockStack gap="300">
                   <InlineStack align="space-between" blockAlign="center">
-                    <Text as="h2" variant="headingMd">
-                      Line items
-                    </Text>
-                    <Text as="span" tone="subdued">
+                    <InlineStack gap="200" blockAlign="center">
+                      <Icon source={ProductIcon} tone="base" />
+                      <Text as="h2" variant="headingMd">
+                        Line items
+                      </Text>
+                    </InlineStack>
+                    <Text as="span" tone="subdued" variant="bodySm">
                       {po.lineItems.length} item
                       {po.lineItems.length === 1 ? "" : "s"}
                     </Text>
@@ -458,9 +472,12 @@ export default function PurchaseOrderDetail() {
 
               <Card>
                 <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">
-                    Cost summary
-                  </Text>
+                  <InlineStack gap="200" blockAlign="center">
+                    <Icon source={CashDollarIcon} tone="base" />
+                    <Text as="h2" variant="headingMd">
+                      Cost summary
+                    </Text>
+                  </InlineStack>
                   <DescriptionList
                     items={[
                       { term: "Subtotal", description: po.subtotal },
@@ -500,9 +517,12 @@ export default function PurchaseOrderDetail() {
               {po.receipts.length > 0 ? (
                 <Card>
                   <BlockStack gap="300">
-                    <Text as="h2" variant="headingMd">
-                      Receipts
-                    </Text>
+                    <InlineStack gap="200" blockAlign="center">
+                      <Icon source={PackageIcon} tone="base" />
+                      <Text as="h2" variant="headingMd">
+                        Receipts
+                      </Text>
+                    </InlineStack>
                     {po.receipts.map((receipt) => (
                       <BlockStack key={receipt.id} gap="100">
                         <Text as="p" variant="bodyMd" fontWeight="semibold">
@@ -560,9 +580,12 @@ export default function PurchaseOrderDetail() {
               <Card>
                 <BlockStack gap="400">
                   <BlockStack gap="100">
-                    <Text as="h2" variant="headingMd">
-                      Supplier
-                    </Text>
+                    <InlineStack gap="200" blockAlign="center">
+                      <Icon source={PersonIcon} tone="base" />
+                      <Text as="h2" variant="headingMd">
+                        Supplier
+                      </Text>
+                    </InlineStack>
                     <Text as="p" variant="bodyMd" fontWeight="semibold">
                       {po.supplier.name}
                     </Text>

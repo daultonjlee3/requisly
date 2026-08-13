@@ -17,7 +17,10 @@ import {
   Page,
   Text,
 } from "@shopify/polaris";
+import { InventoryIcon, ProductIcon } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
+import { SectionHeading } from "../components/SectionHeading";
+import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
 import { getMerchantContext } from "../lib/merchant.server";
 import { listProductsWorkspace } from "../lib/products.server";
 import { syncShopifyCatalogGraphql } from "../lib/shopify-sync.server";
@@ -80,14 +83,16 @@ export default function ProductsPage() {
 
         <Card>
           <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">
-              Supplier catalog
-            </Text>
+            <SectionHeading
+              title="Supplier catalog"
+              icon={ProductIcon}
+              subtitle="Costed items you buy from suppliers."
+            />
             {catalog.length === 0 ? (
               <EmptyState
                 heading="No supplier products"
                 action={{ content: "Add product", url: "/app/products/new" }}
-                image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+                image={EMPTY_STATE_IMAGE.products}
               >
                 <p>Add products with effective unit costs for PO line picking.</p>
               </EmptyState>
@@ -129,13 +134,26 @@ export default function ProductsPage() {
 
         <Card>
           <BlockStack gap="300">
-            <Text as="h2" variant="headingMd">
-              Shopify variants
-            </Text>
+            <SectionHeading
+              title="Shopify variants"
+              icon={InventoryIcon}
+              subtitle="Synced from Admin after catalog sync."
+            />
             {variants.length === 0 ? (
-              <Text as="p" tone="subdued">
-                No synced variants yet. Run Sync Shopify catalog.
-              </Text>
+              <EmptyState
+                heading="No Shopify catalog synced yet"
+                image={EMPTY_STATE_IMAGE.products}
+              >
+                <p>
+                  Pull products, variants, and inventory levels from Shopify so
+                  you can receive against real SKUs.
+                </p>
+                <Form method="post">
+                  <Button submit loading={syncing}>
+                    Sync Shopify catalog
+                  </Button>
+                </Form>
+              </EmptyState>
             ) : (
               <IndexTable
                 resourceName={{ singular: "variant", plural: "variants" }}

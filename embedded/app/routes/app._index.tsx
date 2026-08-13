@@ -12,14 +12,31 @@ import {
   BlockStack,
   Button,
   Card,
+  EmptyState,
+  Icon,
   InlineStack,
   Layout,
   Page,
   ResourceItem,
   ResourceList,
   Text,
+  type IconSource,
 } from "@shopify/polaris";
+import {
+  DeliveryIcon,
+  OrderIcon,
+  PackageIcon,
+  AlertCircleIcon,
+} from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
+import { AiInsightsPanel } from "../components/AiInsightsPanel";
+import { SectionHeading } from "../components/SectionHeading";
+import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
+import {
+  dismissInsight,
+  listActiveInsights,
+  workspaceIsInsightEligible,
+} from "../lib/ai-agents.server";
 import { loadDashboard } from "../lib/dashboard.server";
 import { getMerchantContext } from "../lib/merchant.server";
 import type { DashRow } from "../lib/po-types";
@@ -37,7 +54,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     url.searchParams.get("forceError") === "1";
 
   const merchant = await getMerchantContext(request, { sync: "auto" });
-  const dashboard = await loadDashboard(merchant.workspace.id, { forceError });
+  const [dashboard, gate, insights] = await Promise.all([
+    loadDashboard(merchant.workspace.id, { forceError }),
+    workspaceIsInsightEligible(merchant.workspace.id),
+    listActiveInsights(merchant.workspace.id, 5),
+  ]);
 
   const ms = timer.end({
     catalogSyncPending: merchant.catalogSyncPending,
@@ -47,15 +68,29 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     workspaceName: merchant.workspace.name,
     shopDomain: merchant.shopDomain,
+    isDev: process.env.NODE_ENV !== "production",
     syncedAt: merchant.workspace.shopify_synced_at,
     catalogSyncPending: merchant.catalogSyncPending,
     syncError: merchant.syncError,
     dashboard,
+    insightsEligible: gate.eligible,
+    insightsGateReason: gate.reason ?? null,
+    insights,
     loaderMs: ms,
   };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
+  const form = await request.formData();
+  const intent = String(form.get("intent") ?? "sync");
+
+  if (intent === "dismiss_insight") {
+    const merchant = await getMerchantContext(request, { sync: false });
+    const insightId = String(form.get("insightId") ?? "");
+    if (insightId) await dismissInsight(merchant.workspace.id, insightId);
+    return { sync: null, error: null as string | null };
+  }
+
   const { admin, session } = await authenticate.admin(request);
   if (!session.accessToken) {
     return { sync: null, error: "Shopify session is missing an access token" };
@@ -82,10 +117,14 @@ export default function TodaysWork() {
   const {
     workspaceName,
     shopDomain,
+    isDev,
     syncedAt,
     catalogSyncPending,
     syncError,
     dashboard,
+    insightsEligible,
+    insightsGateReason,
+    insights,
     loaderMs,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
@@ -149,6 +188,12 @@ export default function TodaysWork() {
           </Banner>
         ) : null}
 
+        <AiInsightsPanel
+          eligible={insightsEligible}
+          gateReason={insightsGateReason}
+          insights={insights}
+        />
+
         {sync ? (
           <Banner tone="success" title="Catalog synced">
             <p>
@@ -158,12 +203,35 @@ export default function TodaysWork() {
           </Banner>
         ) : null}
 
-        {!dashboard.loadError ? (
+        {!dashboard.loadError && !dashboard.hasAnyPurchaseOrders ? (
+          <Card>
+            <EmptyState
+              heading="Create your first purchase order"
+              image={EMPTY_STATE_IMAGE.orders}
+              action={{
+                content: "New PO",
+                url: "/app/purchase-orders/new",
+              }}
+              secondaryAction={{
+                content: "Add a supplier",
+                url: "/app/suppliers/new",
+              }}
+            >
+              <p>
+                Today&apos;s Work fills in once you send POs — waiting
+                confirmation, arrivals, and receiving queues all start here.
+              </p>
+            </EmptyState>
+          </Card>
+        ) : null}
+
+        {!dashboard.loadError && dashboard.hasAnyPurchaseOrders ? (
           <Layout>
             <Layout.Section variant="oneHalf">
               <DashCard
                 title="Waiting for confirmation"
                 empty="No POs waiting on suppliers."
+                icon={OrderIcon}
                 rows={dashboard.waitingConfirmation}
               />
             </Layout.Section>
@@ -171,6 +239,7 @@ export default function TodaysWork() {
               <DashCard
                 title="Inventory to receive"
                 empty="Nothing ready to receive."
+                icon={PackageIcon}
                 rows={dashboard.readyToReceive}
               />
             </Layout.Section>
@@ -178,6 +247,7 @@ export default function TodaysWork() {
               <DashCard
                 title="Shipments arriving today"
                 empty="No shipments dated today."
+                icon={DeliveryIcon}
                 rows={dashboard.arrivingToday}
               />
             </Layout.Section>
@@ -185,6 +255,7 @@ export default function TodaysWork() {
               <DashCard
                 title="Suppliers overdue"
                 empty="No overdue ship dates."
+                icon={AlertCircleIcon}
                 rows={dashboard.overdue}
               />
             </Layout.Section>
@@ -192,11 +263,12 @@ export default function TodaysWork() {
             <Layout.Section>
               <Card>
                 <BlockStack gap="300">
-                  <Text as="h2" variant="headingMd">
-                    Recent supplier updates
-                  </Text>
+                  <SectionHeading
+                    title="Recent supplier updates"
+                    icon={DeliveryIcon}
+                  />
                   {dashboard.recentUpdates.length === 0 ? (
-                    <Text as="p" tone="subdued">
+                    <Text as="p" tone="subdued" variant="bodyMd">
                       Supplier Link activity will show up here once a supplier
                       opens or updates an order.
                     </Text>
@@ -237,7 +309,7 @@ export default function TodaysWork() {
           </Layout>
         ) : null}
 
-        {process.env.NODE_ENV !== "production" && loaderMs != null ? (
+        {isDev && loaderMs != null ? (
           <Text as="p" tone="subdued" variant="bodySm">
             Loader {loaderMs}ms (dev timing)
           </Text>
@@ -250,23 +322,28 @@ export default function TodaysWork() {
 function DashCard({
   title,
   empty,
+  icon,
   rows,
 }: {
   title: string;
   empty: string;
+  icon: IconSource;
   rows: DashRow[];
 }) {
   return (
     <Card>
       <BlockStack gap="300">
         <InlineStack align="space-between" blockAlign="center">
-          <Text as="h2" variant="headingMd">
-            {title}
-          </Text>
+          <InlineStack gap="200" blockAlign="center">
+            <Icon source={icon} tone="base" />
+            <Text as="h2" variant="headingMd">
+              {title}
+            </Text>
+          </InlineStack>
           <Badge>{String(rows.length)}</Badge>
         </InlineStack>
         {rows.length === 0 ? (
-          <Text as="p" tone="subdued">
+          <Text as="p" tone="subdued" variant="bodyMd">
             {empty}
           </Text>
         ) : (

@@ -16,8 +16,9 @@ import {
   Text,
   TextField,
 } from "@shopify/polaris";
-import { SearchIcon } from "@shopify/polaris-icons";
+import { ProductIcon, SearchIcon } from "@shopify/polaris-icons";
 import { useNavigate } from "@remix-run/react";
+import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
 import { gidToNumericId } from "../lib/format";
 import { todayDateInputValue } from "../lib/pricing";
 
@@ -204,15 +205,18 @@ export function SupplierProductsPanel({
         <Card>
           <BlockStack gap="400">
             <InlineStack align="space-between" blockAlign="center" wrap>
-              <BlockStack gap="100">
-                <Text as="h2" variant="headingMd">
-                  Vendor price list
-                </Text>
-                <Text as="p" variant="bodySm" tone="subdued">
-                  Link products from your Shopify catalog, then set this
-                  vendor&apos;s unit cost.
-                </Text>
-              </BlockStack>
+              <InlineStack gap="200" blockAlign="start" wrap={false}>
+                <Icon source={ProductIcon} tone="base" />
+                <BlockStack gap="100">
+                  <Text as="h2" variant="headingMd">
+                    Vendor price list
+                  </Text>
+                  <Text as="p" variant="bodySm" tone="subdued">
+                    Link products from your Shopify catalog, then set this
+                    vendor&apos;s unit cost.
+                  </Text>
+                </BlockStack>
+              </InlineStack>
               <Button onClick={() => void browseShopifyProducts()}>
                 Browse Shopify catalog
               </Button>
@@ -256,7 +260,7 @@ export function SupplierProductsPanel({
                   content: "Browse Shopify catalog",
                   onAction: () => void browseShopifyProducts(),
                 }}
-                image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+                image={EMPTY_STATE_IMAGE.products}
               >
                 <p>
                   Pull variants from your Shopify product list, then set unit

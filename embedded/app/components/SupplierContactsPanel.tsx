@@ -7,11 +7,13 @@ import {
   Card,
   Checkbox,
   FormLayout,
+  Icon,
   IndexTable,
   InlineStack,
   Text,
   TextField,
 } from "@shopify/polaris";
+import { PersonIcon } from "@shopify/polaris-icons";
 import { useState } from "react";
 import type { SupplierContact } from "../lib/suppliers.server";
 
@@ -63,14 +65,17 @@ export function SupplierContactsPanel({ contacts }: Props) {
     <Card>
       <BlockStack gap="400">
         <InlineStack align="space-between" blockAlign="center" wrap>
-          <BlockStack gap="100">
-            <Text as="h2" variant="headingMd">
-              Contacts
-            </Text>
-            <Text as="p" variant="bodySm" tone="subdued">
-              Primary contact is used for Supplier Link and PO emails.
-            </Text>
-          </BlockStack>
+          <InlineStack gap="200" blockAlign="start" wrap={false}>
+            <Icon source={PersonIcon} tone="base" />
+            <BlockStack gap="100">
+              <Text as="h2" variant="headingMd">
+                Contacts
+              </Text>
+              <Text as="p" variant="bodySm" tone="subdued">
+                Primary contact is used for Supplier Link and PO emails.
+              </Text>
+            </BlockStack>
+          </InlineStack>
           {!showAdd && !editingId ? (
             <Button
               onClick={() => {

@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   DropZone,
+  Icon,
   InlineStack,
   Select,
   Text,
@@ -56,9 +57,12 @@ export function PoDocumentsCard({
     <Card>
       <BlockStack gap="400">
         <InlineStack align="space-between" blockAlign="center">
-          <Text as="h2" variant="headingMd">
-            Documents
-          </Text>
+          <InlineStack gap="200" blockAlign="center">
+            <Icon source={NoteIcon} tone="base" />
+            <Text as="h2" variant="headingMd">
+              Documents
+            </Text>
+          </InlineStack>
           <Form method="post">
             <input type="hidden" name="intent" value="generate_pdf" />
             <Button submit loading={generating}>
