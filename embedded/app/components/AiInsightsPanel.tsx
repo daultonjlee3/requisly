@@ -18,6 +18,11 @@ const AGENT_LABEL: Record<string, string> = {
   operations: "Operations",
   supplier: "Supplier",
   procurement: "Procurement",
+  margin: "Margin",
+  quality: "Quality",
+  reorder: "Reorder",
+  documentation: "Documentation",
+  hygiene: "Data hygiene",
 };
 
 const TYPE_TONE: Record<string, "info" | "warning" | "success" | "attention"> =
@@ -29,6 +34,13 @@ const TYPE_TONE: Record<string, "info" | "warning" | "success" | "attention"> =
     alternate_supplier: "attention",
     price_increase: "warning",
     draft_po_suggestion: "success",
+    margin_compression: "warning",
+    quality_pattern: "attention",
+    reorder_cadence: "info",
+    missing_documents: "warning",
+    missing_documents_pattern: "attention",
+    catalog_incomplete: "info",
+    catalog_price_stale: "warning",
   };
 
 export function AiInsightsPanel(props: {
@@ -48,7 +60,7 @@ export function AiInsightsPanel(props: {
           <SectionHeading
             title="AI insights"
             icon={ChartVerticalIcon}
-            subtitle="Operations, Supplier, and Procurement agents — from your PO history only. Never auto-sends."
+            subtitle="Claude turns your PO metrics into short insights. Draft suggestions never auto-send — you review first."
           />
           {showGenerate && eligible ? (
             <Form method="post">

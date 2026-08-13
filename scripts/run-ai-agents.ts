@@ -3,6 +3,8 @@
  *
  *   npx tsx --env-file=embedded/.env scripts/run-ai-agents.ts --force
  *   npx tsx --env-file=embedded/.env scripts/run-ai-agents.ts --workspace=<uuid> --force
+ *
+ * Requires ANTHROPIC_API_KEY for Claude Haiku narration (falls back to templates if unset).
  */
 const DEMO_ID = "d9ddbe22-1e49-4be3-9bd0-b6750008af63";
 
