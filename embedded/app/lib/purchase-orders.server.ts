@@ -553,7 +553,9 @@ export async function createPurchaseOrder(opts: {
   shippingAmount?: number;
   adjustmentAmount?: number;
   lines: CreateLineInput[];
-}): Promise<{ id: string }> {
+  /** Timeline metadata.source — e.g. embedded_create | ai_procurement_agent */
+  source?: string;
+}): Promise<{ id: string; poNumber: string }> {
   const { workspaceId, supplierId, locationId, requestedShipDate, notes } =
     opts;
   const lines = opts.lines
@@ -621,11 +623,14 @@ export async function createPurchaseOrder(opts: {
     po_id: po.id,
     event_type: "draft",
     actor: "merchant",
-    metadata: { source: "embedded_create" },
+    metadata: {
+      source: opts.source ?? "embedded_create",
+      ai_suggested: opts.source === "ai_procurement_agent",
+    },
   });
   if (eventError) throw new Error(eventError.message);
 
-  return { id: po.id };
+  return { id: po.id, poNumber };
 }
 
 async function nextPoNumber(workspaceId: string): Promise<string> {
