@@ -39,6 +39,9 @@ if (host === "localhost") {
 
 export default defineConfig({
   server: {
+    // Bind IPv4 explicitly — on Windows, Vite's "localhost" often listens on
+    // ::1 only, while `shopify app dev` proxies to 127.0.0.1 (blank Admin iframe).
+    host: "127.0.0.1",
     allowedHosts: [host],
     cors: {
       preflightContinue: true,
@@ -75,6 +78,7 @@ export default defineConfig({
       "@shopify/app-bridge-react",
       "@shopify/polaris",
       "@shopify/polaris-icons",
+      "@shopify/polaris-viz",
       "@remix-run/react",
       "react",
       "react-dom",
