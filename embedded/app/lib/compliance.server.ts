@@ -149,7 +149,15 @@ export async function handleCustomersRedact(
 }
 
 /**
- * shop/redact (and uninstall cleanup) — hard-delete the workspace and cascaded data.
+ * app/uninstalled — revoke offline token + sessions, keep the workspace so a
+ * reinstall reclaims the same shopify_domain row (POs/catalog intact).
+ *
+ * shop/redact — hard-delete the workspace and cascaded data (GDPR deadline).
+ *
+ * Prod check: local isolation QA never saw Shopify deliver app/uninstalled to the
+ * Cloudflare tunnel; soft-uninstall was exercised by calling this function directly.
+ * After production deploy, uninstall a real/dev store and confirm a compliance_events
+ * row lands with action=revoked (see webhooks.app.uninstalled.tsx).
  */
 export async function purgeShopData(
   shop: string,
@@ -167,8 +175,18 @@ export async function purgeShopData(
 
   let deletedDocuments = 0;
   let deletedWorkspace = false;
+  let credentialsRevoked = false;
 
-  if (workspace?.id) {
+  if (topic === "app/uninstalled") {
+    if (workspace?.id) {
+      const { error: credErr } = await supabase
+        .from("workspace_shopify_credentials")
+        .delete()
+        .eq("workspace_id", workspace.id);
+      if (credErr) throw new Error(credErr.message);
+      credentialsRevoked = true;
+    }
+  } else if (workspace?.id) {
     const { data: docs } = await supabase
       .from("po_documents")
       .select("file_path")
@@ -202,9 +220,10 @@ export async function purgeShopData(
   }
 
   const result = {
-    action: "purged",
+    action: topic === "app/uninstalled" ? "revoked" : "purged",
     shop_domain: domain,
     workspace_deleted: deletedWorkspace,
+    credentials_revoked: credentialsRevoked,
     storage_files_removed: deletedDocuments,
     sessions_deleted: sessionDelete.count,
   };

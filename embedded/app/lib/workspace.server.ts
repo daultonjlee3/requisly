@@ -9,12 +9,20 @@ export type WorkspaceRow = {
   is_demo: boolean;
 };
 
+const WORKSPACE_SELECT =
+  "id, name, shopify_domain, shopify_synced_at, is_demo" as const;
+
 /**
  * Auth bridge: resolve (or create) a Supabase workspace for the installed shop.
  * Merchant identity is the shop domain — no Supabase Auth login on the embedded surface.
  *
- * If the shop is new and exactly one non-demo workspace has no shopify_domain yet
- * (e.g. Salt & Fern bootstrapped via Next.js signup), claim that workspace.
+ * Claiming rules:
+ * 1. If a workspace already has this shopify_domain → reuse it (covers reinstall
+ *    after soft uninstall, and every subsequent Admin open).
+ * 2. Otherwise create a NEW workspace scoped to that domain.
+ * 3. Never attach a shop to an "unclaimed" workspace that already exists for
+ *    another merchant / signup flow. Pre-Shopify signup workspaces must be
+ *    linked explicitly (out of band), not stolen on install.
  */
 export async function ensureWorkspaceForShop(opts: {
   shop: string;
@@ -27,11 +35,12 @@ export async function ensureWorkspaceForShop(opts: {
   }
 
   const supabase = createServiceClient();
-  const displayName = opts.shopName?.trim() || domain.replace(".myshopify.com", "");
+  const displayName =
+    opts.shopName?.trim() || domain.replace(".myshopify.com", "");
 
   const { data: existing, error: lookupErr } = await supabase
     .from("workspaces")
-    .select("id, name, shopify_domain, shopify_synced_at, is_demo")
+    .select(WORKSPACE_SELECT)
     .eq("shopify_domain", domain)
     .maybeSingle();
   if (lookupErr) throw new Error(lookupErr.message);
@@ -54,95 +63,122 @@ export async function ensureWorkspaceForShop(opts: {
       }
     }
   } else {
-    const { data: unclaimed, error: unclaimedErr } = await supabase
-      .from("workspaces")
-      .select("id, name, shopify_domain, shopify_synced_at, is_demo")
-      .is("shopify_domain", null)
-      .eq("is_demo", false);
-    if (unclaimedErr) throw new Error(unclaimedErr.message);
-
-    // TODO(install-flow): Claiming "the sole unclaimed non-demo workspace" is a
-    // one-time bootstrap hack for the Salt & Fern → embedded pivot. It breaks as
-    // soon as a second real merchant store installs (ambiguous claim, or wrong
-    // workspace linked). Replace with real multi-workspace install handling
-    // (explicit link UI, Partner install metadata, or create-always + migrate)
-    // before any second real store connects. Do not silently trust this path.
-    if (unclaimed && unclaimed.length === 1) {
-      const claim = unclaimed[0] as WorkspaceRow;
-      const { data: updated, error: claimErr } = await supabase
-        .from("workspaces")
-        .update({ shopify_domain: domain })
-        .eq("id", claim.id)
-        .select("id, name, shopify_domain, shopify_synced_at, is_demo")
-        .single();
-      if (claimErr) throw new Error(claimErr.message);
-      workspace = updated as WorkspaceRow;
-    } else {
-      const { data: created, error: createErr } = await supabase
-        .from("workspaces")
-        .insert({ name: displayName, shopify_domain: domain })
-        .select("id, name, shopify_domain, shopify_synced_at, is_demo")
-        .single();
-      if (createErr) throw new Error(createErr.message);
-      workspace = created as WorkspaceRow;
-
-      const { error: locErr } = await supabase.from("locations").insert({
-        workspace_id: workspace.id,
-        name: "Primary",
-        is_primary: true,
-      });
-      if (locErr) throw new Error(locErr.message);
-
-      const { error: rulesErr } = await supabase.from("notification_rules").insert([
-        {
-          workspace_id: workspace.id,
-          rule_type: "po_not_confirmed",
-          enabled: true,
-          threshold_value: 2,
-        },
-        {
-          workspace_id: workspace.id,
-          rule_type: "shipment_delayed",
-          enabled: true,
-          threshold_value: null,
-        },
-        {
-          workspace_id: workspace.id,
-          rule_type: "arriving_soon",
-          enabled: true,
-          threshold_value: 1,
-        },
-        {
-          workspace_id: workspace.id,
-          rule_type: "inventory_low",
-          enabled: true,
-          threshold_value: null,
-        },
-      ]);
-      if (rulesErr) throw new Error(rulesErr.message);
-    }
+    workspace = await createWorkspaceForShop({
+      supabase,
+      domain,
+      displayName,
+    });
   }
+
+  await upsertShopCredentials({
+    supabase,
+    workspaceId: workspace.id,
+    domain,
+    accessToken: opts.accessToken,
+  });
+
+  return workspace;
+}
+
+async function createWorkspaceForShop(opts: {
+  supabase: ReturnType<typeof createServiceClient>;
+  domain: string;
+  displayName: string;
+}): Promise<WorkspaceRow> {
+  const { supabase, domain, displayName } = opts;
+
+  const { data: created, error: createErr } = await supabase
+    .from("workspaces")
+    .insert({ name: displayName, shopify_domain: domain })
+    .select(WORKSPACE_SELECT)
+    .single();
+
+  if (createErr) {
+    // Concurrent install for the same shop — unique(shopify_domain) won the race.
+    if (createErr.code === "23505") {
+      const { data: raced, error: raceErr } = await supabase
+        .from("workspaces")
+        .select(WORKSPACE_SELECT)
+        .eq("shopify_domain", domain)
+        .maybeSingle();
+      if (raceErr) throw new Error(raceErr.message);
+      if (raced) return raced as WorkspaceRow;
+    }
+    throw new Error(createErr.message);
+  }
+
+  const workspace = created as WorkspaceRow;
+
+  const { error: locErr } = await supabase.from("locations").insert({
+    workspace_id: workspace.id,
+    name: "Primary",
+    is_primary: true,
+  });
+  if (locErr) throw new Error(locErr.message);
+
+  const { error: rulesErr } = await supabase.from("notification_rules").insert([
+    {
+      workspace_id: workspace.id,
+      rule_type: "po_not_confirmed",
+      enabled: true,
+      threshold_value: 2,
+    },
+    {
+      workspace_id: workspace.id,
+      rule_type: "shipment_delayed",
+      enabled: true,
+      threshold_value: null,
+    },
+    {
+      workspace_id: workspace.id,
+      rule_type: "arriving_soon",
+      enabled: true,
+      threshold_value: 1,
+    },
+    {
+      workspace_id: workspace.id,
+      rule_type: "inventory_low",
+      enabled: true,
+      threshold_value: null,
+    },
+  ]);
+  if (rulesErr) throw new Error(rulesErr.message);
+
+  return workspace;
+}
+
+async function upsertShopCredentials(opts: {
+  supabase: ReturnType<typeof createServiceClient>;
+  workspaceId: string;
+  domain: string;
+  accessToken: string;
+}) {
+  const { supabase, workspaceId, domain, accessToken } = opts;
 
   // Skip write when the offline token is unchanged (every navigation hits this path).
   const { data: existingCred } = await supabase
     .from("workspace_shopify_credentials")
-    .select("access_token")
-    .eq("workspace_id", workspace.id)
+    .select("access_token, shopify_domain")
+    .eq("workspace_id", workspaceId)
     .maybeSingle();
 
-  if (existingCred?.access_token !== opts.accessToken) {
-    const { error: credErr } = await supabase
-      .from("workspace_shopify_credentials")
-      .upsert(
-        {
-          workspace_id: workspace.id,
-          access_token: opts.accessToken,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "workspace_id" },
-      );
-    if (credErr) throw new Error(credErr.message);
+  if (
+    existingCred?.access_token === accessToken &&
+    existingCred?.shopify_domain === domain
+  ) {
+    return;
   }
 
-  return workspace;
+  const { error: credErr } = await supabase
+    .from("workspace_shopify_credentials")
+    .upsert(
+      {
+        workspace_id: workspaceId,
+        shopify_domain: domain,
+        access_token: accessToken,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "workspace_id" },
+    );
+  if (credErr) throw new Error(credErr.message);
 }
