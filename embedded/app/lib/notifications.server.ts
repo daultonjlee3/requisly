@@ -29,7 +29,8 @@ export const RULE_COPY: Record<
   inventory_low: {
     title: "Inventory low",
     description:
-      "Fires when synced inventory is below threshold (requires catalog sync).",
+      "Email when synced on-hand inventory is at or below the reorder point (per-product threshold when set, otherwise this workspace default).",
+    thresholdLabel: "Default on-hand threshold",
   },
 };
 
@@ -66,7 +67,7 @@ export async function loadNotificationSettings(
       supabase
         .from("notification_log")
         .select(
-          "id, rule_type, po_id, sent_at, recipient_email, purchase_orders(po_number)",
+          "id, rule_type, po_id, dedupe_key, sent_at, recipient_email, purchase_orders(po_number)",
         )
         .eq("workspace_id", workspaceId)
         .order("sent_at", { ascending: false })
@@ -98,10 +99,15 @@ export async function loadNotificationSettings(
         po_number: string;
       } | null;
       const type = row.rule_type as NotificationRuleType;
+      const dedupe = (row as { dedupe_key?: string | null }).dedupe_key;
       return {
         id: row.id,
         ruleTitle: RULE_COPY[type]?.title ?? row.rule_type,
-        poNumber: po?.po_number ?? "—",
+        poNumber:
+          po?.po_number ??
+          (type === "inventory_low" || dedupe?.startsWith("inventory_low:")
+            ? "Low-stock SKU"
+            : "—"),
         recipient: row.recipient_email ?? "—",
         sentAt: relativeTime(row.sent_at),
       };

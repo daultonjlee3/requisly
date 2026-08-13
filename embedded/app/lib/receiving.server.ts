@@ -1,17 +1,29 @@
 import { createServiceClient } from "./supabase.server";
 import type { PoStatus } from "./po-status";
 import type {
+  CorrectReceiptFormData,
   ReceiptCondition,
   ReceiveFormData,
 } from "./po-types";
 
-export type { ReceiptCondition, ReceiveFormData, ReceiveLine } from "./po-types";
+export type {
+  CorrectReceiptFormData,
+  ReceiptCondition,
+  ReceiveFormData,
+  ReceiveLine,
+} from "./po-types";
 
 type ReceiptLineInput = {
   po_line_item_id: string;
   qty_received: number;
   condition: ReceiptCondition;
   reason_note?: string;
+};
+
+type InventoryDeltaLine = {
+  po_line_item_id: string;
+  /** Signed Shopify / local inventory change (good units only). */
+  delta: number;
 };
 
 type GraphqlAdmin = {
@@ -26,6 +38,14 @@ const RECEIVABLE: PoStatus[] = [
   "in_transit",
   "partially_received",
 ];
+
+/** Units that previously hit (or will hit) inventory — good condition only. */
+function inventoryEffectiveQty(
+  qty: number,
+  condition: ReceiptCondition,
+): number {
+  return condition === "good" ? Math.max(0, qty) : 0;
+}
 
 export async function loadReceiveForm(
   workspaceId: string,
@@ -93,6 +113,74 @@ export async function loadReceiveForm(
     supplierName: supplier?.name ?? "—",
     locationName: location?.name ?? "Primary",
     status: po.status as PoStatus,
+    lines,
+  };
+}
+
+export async function loadReceiptCorrectionForm(
+  workspaceId: string,
+  poId: string,
+  receiptId: string,
+): Promise<CorrectReceiptFormData | null> {
+  const supabase = createServiceClient();
+
+  const { data: receipt, error } = await supabase
+    .from("receipts")
+    .select(
+      "id, note, created_at, po_id, workspace_id, purchase_orders(id, po_number, suppliers(name), locations(name)), receipt_line_items(id, po_line_item_id, qty_received, condition, reason_note, po_line_items(id, description, qty, sort_order))",
+    )
+    .eq("id", receiptId)
+    .eq("workspace_id", workspaceId)
+    .eq("po_id", poId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!receipt) return null;
+
+  const po = receipt.purchase_orders as unknown as {
+    id: string;
+    po_number: string;
+    suppliers: { name: string } | null;
+    locations: { name: string } | null;
+  } | null;
+
+  const lines = (
+    (receipt.receipt_line_items ?? []) as Array<{
+      id: string;
+      po_line_item_id: string;
+      qty_received: number;
+      condition: ReceiptCondition;
+      reason_note: string | null;
+      po_line_items: {
+        id: string;
+        description: string;
+        qty: number;
+        sort_order: number;
+      } | null;
+    }>
+  )
+    .slice()
+    .sort(
+      (a, b) =>
+        (a.po_line_items?.sort_order ?? 0) - (b.po_line_items?.sort_order ?? 0),
+    )
+    .map((line) => ({
+      id: line.id,
+      poLineItemId: line.po_line_item_id,
+      description: line.po_line_items?.description ?? "Line item",
+      orderedQty: line.po_line_items?.qty ?? 0,
+      qtyReceived: line.qty_received,
+      condition: line.condition,
+      reasonNote: line.reason_note,
+    }));
+
+  return {
+    receiptId: receipt.id,
+    poId: receipt.po_id,
+    poNumber: po?.po_number ?? "PO",
+    supplierName: po?.suppliers?.name ?? "—",
+    locationName: po?.locations?.name ?? "Primary",
+    note: receipt.note,
+    createdAt: receipt.created_at,
     lines,
   };
 }
@@ -197,50 +285,197 @@ export async function completeReceiving(opts: {
     );
   }
 
-  const fullyReceived = (poLines ?? []).every(
-    (line) => (receivedSoFar.get(line.id) ?? 0) >= line.qty,
-  );
-  const anyReceived = (poLines ?? []).some(
-    (line) => (receivedSoFar.get(line.id) ?? 0) > 0,
-  );
-  if (!anyReceived) throw new Error("Nothing received");
+  const nextStatus = await recomputePoReceiveStatus({
+    supabase,
+    poId,
+    poLines: poLines ?? [],
+    receivedSoFar,
+    receiptId: receipt.id,
+    mode: "receive",
+  });
 
-  const nextStatus: PoStatus = fullyReceived ? "closed" : "partially_received";
-
-  const { error: statusError } = await supabase
-    .from("purchase_orders")
-    .update({ status: nextStatus })
-    .eq("id", poId);
-  if (statusError) throw new Error(statusError.message);
-
-  if (fullyReceived) {
-    await supabase.from("po_timeline_events").insert([
-      {
-        po_id: poId,
-        event_type: "received",
-        actor: "merchant",
-        metadata: { receipt_id: receipt.id },
-      },
-      {
-        po_id: poId,
-        event_type: "closed",
-        actor: "system",
-        metadata: { reason: "full_receipt", receipt_id: receipt.id },
-      },
-    ]);
-  } else {
-    await supabase.from("po_timeline_events").insert({
-      po_id: poId,
-      event_type: "partially_received",
-      actor: "merchant",
-      metadata: { receipt_id: receipt.id },
-    });
-  }
-
-  await applyInventoryForReceipt({
+  await applyInventoryDeltas({
     workspaceId,
     poId,
-    receiptLines: activeLines,
+    deltas: activeLines.map((line) => ({
+      po_line_item_id: line.po_line_item_id,
+      delta: inventoryEffectiveQty(line.qty_received, line.condition),
+    })),
+    admin,
+  });
+
+  return { nextStatus };
+}
+
+/**
+ * Edit a submitted receipt. Inventory write-back uses (new good qty − old good qty)
+ * so corrections never double-count or leave stale Shopify stock.
+ */
+export async function correctReceipt(opts: {
+  workspaceId: string;
+  poId: string;
+  receiptId: string;
+  note: string | null;
+  lines: Array<{
+    receipt_line_item_id: string;
+    qty_received: number;
+    condition: ReceiptCondition;
+    reason_note?: string;
+  }>;
+  admin?: GraphqlAdmin;
+}): Promise<{ nextStatus: PoStatus }> {
+  const { workspaceId, poId, receiptId, note, lines, admin } = opts;
+  const supabase = createServiceClient();
+
+  const { data: receipt, error: receiptErr } = await supabase
+    .from("receipts")
+    .select(
+      "id, po_id, workspace_id, receipt_line_items(id, po_line_item_id, qty_received, condition)",
+    )
+    .eq("id", receiptId)
+    .eq("workspace_id", workspaceId)
+    .eq("po_id", poId)
+    .maybeSingle();
+  if (receiptErr) throw new Error(receiptErr.message);
+  if (!receipt) throw new Error("Receipt not found");
+
+  const { data: po, error: poErr } = await supabase
+    .from("purchase_orders")
+    .select("id, status")
+    .eq("id", poId)
+    .eq("workspace_id", workspaceId)
+    .maybeSingle();
+  if (poErr) throw new Error(poErr.message);
+  if (!po) throw new Error("Purchase order not found");
+  if (["draft", "cancelled", "rejected"].includes(po.status as string)) {
+    throw new Error("This purchase order cannot have receipt corrections");
+  }
+
+  const existingById = new Map(
+    (
+      (receipt.receipt_line_items ?? []) as Array<{
+        id: string;
+        po_line_item_id: string;
+        qty_received: number;
+        condition: ReceiptCondition;
+      }>
+    ).map((row) => [row.id, row]),
+  );
+
+  if (!lines.length) throw new Error("No receipt lines to update");
+
+  const deltas: InventoryDeltaLine[] = [];
+  const changes: Array<{
+    receipt_line_item_id: string;
+    from_qty: number;
+    to_qty: number;
+    from_condition: ReceiptCondition;
+    to_condition: ReceiptCondition;
+    inventory_delta: number;
+  }> = [];
+
+  for (const line of lines) {
+    const existing = existingById.get(line.receipt_line_item_id);
+    if (!existing) throw new Error("Receipt line not found on this receipt");
+    if (line.qty_received < 0) throw new Error("Quantity cannot be negative");
+    if (
+      !["good", "damaged", "wrong_item", "backorder"].includes(line.condition)
+    ) {
+      throw new Error("Invalid condition");
+    }
+    if (
+      line.condition !== "good" &&
+      !String(line.reason_note ?? "").trim()
+    ) {
+      throw new Error("Reason note is required for non-good conditions");
+    }
+
+    const oldEffective = inventoryEffectiveQty(
+      existing.qty_received,
+      existing.condition,
+    );
+    const newEffective = inventoryEffectiveQty(
+      line.qty_received,
+      line.condition,
+    );
+    const inventoryDelta = newEffective - oldEffective;
+
+    deltas.push({
+      po_line_item_id: existing.po_line_item_id,
+      delta: inventoryDelta,
+    });
+    changes.push({
+      receipt_line_item_id: line.receipt_line_item_id,
+      from_qty: existing.qty_received,
+      to_qty: line.qty_received,
+      from_condition: existing.condition,
+      to_condition: line.condition,
+      inventory_delta: inventoryDelta,
+    });
+
+    const { error: updateErr } = await supabase
+      .from("receipt_line_items")
+      .update({
+        qty_received: line.qty_received,
+        condition: line.condition,
+        reason_note:
+          line.condition === "good"
+            ? null
+            : String(line.reason_note ?? line.condition).trim(),
+      })
+      .eq("id", line.receipt_line_item_id)
+      .eq("receipt_id", receiptId);
+    if (updateErr) throw new Error(updateErr.message);
+  }
+
+  const { error: noteErr } = await supabase
+    .from("receipts")
+    .update({ note })
+    .eq("id", receiptId);
+  if (noteErr) throw new Error(noteErr.message);
+
+  const { data: poLines, error: linesError } = await supabase
+    .from("po_line_items")
+    .select("id, qty")
+    .eq("po_id", poId);
+  if (linesError) throw new Error(linesError.message);
+
+  const { data: allReceipts, error: allErr } = await supabase
+    .from("receipts")
+    .select("id, receipt_line_items(po_line_item_id, qty_received)")
+    .eq("po_id", poId)
+    .eq("workspace_id", workspaceId);
+  if (allErr) throw new Error(allErr.message);
+
+  const receivedSoFar = new Map<string, number>();
+  for (const row of allReceipts ?? []) {
+    const items = (row.receipt_line_items ?? []) as Array<{
+      po_line_item_id: string;
+      qty_received: number;
+    }>;
+    for (const item of items) {
+      receivedSoFar.set(
+        item.po_line_item_id,
+        (receivedSoFar.get(item.po_line_item_id) ?? 0) + item.qty_received,
+      );
+    }
+  }
+
+  const nextStatus = await recomputePoReceiveStatus({
+    supabase,
+    poId,
+    poLines: poLines ?? [],
+    receivedSoFar,
+    receiptId,
+    mode: "correction",
+    previousStatus: po.status as PoStatus,
+    correctionChanges: changes,
+  });
+
+  await applyInventoryDeltas({
+    workspaceId,
+    poId,
+    deltas,
     admin,
   });
 
@@ -277,19 +512,118 @@ export async function closePurchaseOrder(opts: {
   });
 }
 
-async function applyInventoryForReceipt(opts: {
+async function recomputePoReceiveStatus(opts: {
+  supabase: ReturnType<typeof createServiceClient>;
+  poId: string;
+  poLines: Array<{ id: string; qty: number }>;
+  receivedSoFar: Map<string, number>;
+  receiptId: string;
+  mode: "receive" | "correction";
+  previousStatus?: PoStatus;
+  correctionChanges?: Array<{
+    from_qty: number;
+    to_qty: number;
+    inventory_delta: number;
+  }>;
+}): Promise<PoStatus> {
+  const {
+    supabase,
+    poId,
+    poLines,
+    receivedSoFar,
+    receiptId,
+    mode,
+    previousStatus,
+    correctionChanges,
+  } = opts;
+
+  const fullyReceived = poLines.every(
+    (line) => (receivedSoFar.get(line.id) ?? 0) >= line.qty,
+  );
+  const anyReceived = poLines.some(
+    (line) => (receivedSoFar.get(line.id) ?? 0) > 0,
+  );
+
+  let nextStatus: PoStatus;
+  if (fullyReceived) {
+    nextStatus = "closed";
+  } else if (anyReceived) {
+    nextStatus = "partially_received";
+  } else {
+    // All quantities corrected to zero — reopen to shipped so receiving can resume.
+    nextStatus = "shipped";
+  }
+
+  const { error: statusError } = await supabase
+    .from("purchase_orders")
+    .update({ status: nextStatus, updated_at: new Date().toISOString() })
+    .eq("id", poId);
+  if (statusError) throw new Error(statusError.message);
+
+  if (mode === "receive") {
+    if (fullyReceived) {
+      await supabase.from("po_timeline_events").insert([
+        {
+          po_id: poId,
+          event_type: "received",
+          actor: "merchant",
+          metadata: { receipt_id: receiptId },
+        },
+        {
+          po_id: poId,
+          event_type: "closed",
+          actor: "system",
+          metadata: { reason: "full_receipt", receipt_id: receiptId },
+        },
+      ]);
+    } else {
+      await supabase.from("po_timeline_events").insert({
+        po_id: poId,
+        event_type: "partially_received",
+        actor: "merchant",
+        metadata: { receipt_id: receiptId },
+      });
+    }
+    return nextStatus;
+  }
+
+  const qtyChanges = (correctionChanges ?? []).filter(
+    (c) => c.from_qty !== c.to_qty || c.inventory_delta !== 0,
+  );
+  const summary =
+    qtyChanges.length === 0
+      ? "Receipt corrected (condition/note only)"
+      : `Receipt corrected · ${qtyChanges
+          .map((c) => `${c.from_qty}→${c.to_qty}`)
+          .join(", ")}`;
+
+  await supabase.from("po_timeline_events").insert({
+    po_id: poId,
+    event_type: nextStatus === "shipped" ? "shipped" : nextStatus,
+    actor: "merchant",
+    metadata: {
+      reason: "receipt_correction",
+      receipt_id: receiptId,
+      previous_status: previousStatus ?? null,
+      summary,
+      changes: correctionChanges ?? [],
+    },
+  });
+
+  return nextStatus;
+}
+
+async function applyInventoryDeltas(opts: {
   workspaceId: string;
   poId: string;
-  receiptLines: ReceiptLineInput[];
+  deltas: InventoryDeltaLine[];
   admin?: GraphqlAdmin;
 }) {
-  const { workspaceId, poId, receiptLines, admin } = opts;
+  const { workspaceId, poId, deltas, admin } = opts;
   const supabase = createServiceClient();
 
-  const goodLines = receiptLines.filter(
-    (l) => l.condition === "good" && l.qty_received > 0,
-  );
-  if (!goodLines.length) return;
+  const active = deltas.filter((d) => d.delta !== 0);
+  if (!active.length) return;
 
   const { data: po } = await supabase
     .from("purchase_orders")
@@ -303,10 +637,10 @@ async function applyInventoryForReceipt(opts: {
     shopify_location_id: string | null;
   } | null;
 
-  const lineIds = goodLines.map((l) => l.po_line_item_id);
+  const lineIds = active.map((l) => l.po_line_item_id);
   const { data: poLines } = await supabase
     .from("po_line_items")
-    .select("id, sku, description")
+    .select("id, sku, description, is_free_text")
     .in("id", lineIds);
 
   const { data: variants } = await supabase
@@ -320,9 +654,11 @@ async function applyInventoryForReceipt(opts: {
       .map((v) => [v.sku!.toLowerCase(), v] as const),
   );
 
-  for (const line of goodLines) {
+  for (const line of active) {
     const poLine = (poLines ?? []).find((p) => p.id === line.po_line_item_id);
-    const sku = poLine?.sku?.trim().toLowerCase();
+    if (!poLine || poLine.is_free_text) continue;
+
+    const sku = poLine.sku?.trim().toLowerCase();
     if (!sku) continue;
     const variant = variantBySku.get(sku);
     if (!variant) continue;
@@ -334,7 +670,7 @@ async function applyInventoryForReceipt(opts: {
       .eq("location_id", po.location_id)
       .maybeSingle();
 
-    const nextOnHand = (existing?.on_hand ?? 0) + line.qty_received;
+    const nextOnHand = (existing?.on_hand ?? 0) + line.delta;
     if (existing) {
       await supabase
         .from("inventory_levels")
@@ -368,11 +704,11 @@ async function applyInventoryForReceipt(opts: {
           {
             variables: {
               input: {
-                reason: "received",
+                reason: line.delta >= 0 ? "received" : "correction",
                 name: "available",
                 changes: [
                   {
-                    delta: line.qty_received,
+                    delta: line.delta,
                     inventoryItemId: `gid://shopify/InventoryItem/${variant.shopify_inventory_item_id}`,
                     locationId: `gid://shopify/Location/${location.shopify_location_id}`,
                   },
@@ -382,7 +718,7 @@ async function applyInventoryForReceipt(opts: {
           },
         );
       } catch {
-        // Local cache already updated; Shopify errors shouldn't block receiving.
+        // Local cache already updated; Shopify errors shouldn't block correction.
       }
     }
   }

@@ -9,7 +9,8 @@ export type PoStatus =
   | "partially_received"
   | "received"
   | "closed"
-  | "rejected";
+  | "rejected"
+  | "cancelled";
 
 export type LineItemProposal = {
   id: string;

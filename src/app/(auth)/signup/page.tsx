@@ -1,15 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, Suspense, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 
-export default function SignupPage() {
+function SignupForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const nextParam = searchParams.get("next");
+  const safeNext =
+    nextParam && nextParam.startsWith("/") && !nextParam.startsWith("//")
+      ? nextParam
+      : "/";
   const [fullName, setFullName] = useState("");
   const [workspaceName, setWorkspaceName] = useState("");
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(searchParams.get("email") ?? "");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
@@ -30,7 +36,7 @@ export default function SignupPage() {
           full_name: fullName,
           workspace_name: workspaceName || "My Workspace",
         },
-        emailRedirectTo: `${window.location.origin}/auth/callback`,
+        emailRedirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(safeNext)}`,
       },
     });
 
@@ -43,7 +49,7 @@ export default function SignupPage() {
 
     // If email confirmation is disabled, session is present immediately.
     if (data.session) {
-      router.push("/");
+      router.push(safeNext);
       router.refresh();
       return;
     }
@@ -133,11 +139,26 @@ export default function SignupPage() {
         </form>
         <p className="small muted" style={{ margin: "16px 0 0" }}>
           Already have an account?{" "}
-          <Link href="/login" style={{ color: "var(--accent)", fontWeight: 600 }}>
+          <Link
+            href={
+              safeNext !== "/"
+                ? `/login?next=${encodeURIComponent(safeNext)}`
+                : "/login"
+            }
+            style={{ color: "var(--accent)", fontWeight: 600 }}
+          >
             Sign in
           </Link>
         </p>
       </div>
     </div>
+  );
+}
+
+export default function SignupPage() {
+  return (
+    <Suspense>
+      <SignupForm />
+    </Suspense>
   );
 }

@@ -21,6 +21,7 @@ import {
   resolvePoView,
 } from "../components/PoViewToggle";
 import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
+import { downloadCsv, stampFilename, toCsv } from "../lib/csv";
 import { getMerchantContext } from "../lib/merchant.server";
 import { listPurchaseOrders } from "../lib/purchase-orders.server";
 import { listSuppliers } from "../lib/suppliers.server";
@@ -165,6 +166,30 @@ export default function PurchaseOrdersList() {
     })
     .filter((p): p is NonNullable<typeof p> => p != null);
 
+  const exportCsv = useCallback(() => {
+    const csv = toCsv(
+      [
+        "po_number",
+        "supplier",
+        "status",
+        "total",
+        "ship_date",
+        "estimated_arrival",
+        "updated",
+      ],
+      filtered.map((po) => [
+        po.poNumber,
+        po.supplierName,
+        po.status,
+        po.totalRaw,
+        po.requestedShipDateRaw ?? "",
+        po.estimatedArrivalRaw ?? "",
+        po.updated,
+      ]),
+    );
+    downloadCsv(stampFilename("purchase-orders"), csv);
+  }, [filtered]);
+
   return (
     <Page
       title="Purchase orders"
@@ -174,6 +199,11 @@ export default function PurchaseOrdersList() {
         url: "/app/purchase-orders/new",
       }}
       secondaryActions={[
+        {
+          content: "Export",
+          onAction: exportCsv,
+          disabled: filtered.length === 0,
+        },
         {
           content: "Calendar page",
           url: "/app/calendar",

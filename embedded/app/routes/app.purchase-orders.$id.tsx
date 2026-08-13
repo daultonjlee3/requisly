@@ -48,6 +48,7 @@ import {
 } from "../lib/po-templates.server";
 import {
   duplicatePurchaseOrder,
+  cancelPurchaseOrder,
   getPurchaseOrderDetail,
   resolveProposal,
   sendPurchaseOrder,
@@ -95,6 +96,14 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       await closePurchaseOrder({
         workspaceId: merchant.workspace.id,
         poId,
+      });
+      return merchant.redirect(`/app/purchase-orders/${poId}`);
+    }
+    if (intent === "cancel") {
+      await cancelPurchaseOrder({
+        workspaceId: merchant.workspace.id,
+        poId,
+        note: String(formData.get("note") ?? "").trim() || null,
       });
       return merchant.redirect(`/app/purchase-orders/${poId}`);
     }
@@ -265,6 +274,9 @@ export default function PurchaseOrderDetail() {
   const closing =
     navigation.state !== "idle" &&
     navigation.formData?.get("intent") === "close";
+  const cancelling =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("intent") === "cancel";
   const duplicating =
     navigation.state !== "idle" &&
     navigation.formData?.get("intent") === "duplicate";
@@ -360,6 +372,14 @@ export default function PurchaseOrderDetail() {
               Duplicate PO
             </Button>
           </Form>
+          {po.canCancel ? (
+            <Form method="post">
+              <input type="hidden" name="intent" value="cancel" />
+              <Button submit tone="critical" loading={cancelling}>
+                Cancel PO
+              </Button>
+            </Form>
+          ) : null}
           {po.canClose ? (
             <Form method="post">
               <input type="hidden" name="intent" value="close" />
@@ -377,6 +397,14 @@ export default function PurchaseOrderDetail() {
             <p>
               This is a terminal state — Supplier Link actions are closed for
               this PO.
+            </p>
+          </Banner>
+        ) : null}
+        {po.status === "cancelled" ? (
+          <Banner tone="critical" title="Cancelled by merchant">
+            <p>
+              You cancelled this purchase order. It is distinct from a supplier
+              rejection — Supplier Link actions are closed for this PO.
             </p>
           </Banner>
         ) : null}
@@ -501,7 +529,7 @@ export default function PurchaseOrderDetail() {
                   qtyRaw: l.qtyRaw,
                 }))}
                 canAdd={
-                  !["draft", "rejected", "closed", "received"].includes(
+                  !["draft", "rejected", "cancelled", "closed", "received"].includes(
                     po.status,
                   )
                 }
@@ -525,10 +553,18 @@ export default function PurchaseOrderDetail() {
                     </InlineStack>
                     {po.receipts.map((receipt) => (
                       <BlockStack key={receipt.id} gap="100">
-                        <Text as="p" variant="bodyMd" fontWeight="semibold">
-                          {receipt.totalQty} units · {receipt.lineCount} line
-                          {receipt.lineCount === 1 ? "" : "s"}
-                        </Text>
+                        <InlineStack align="space-between" blockAlign="center">
+                          <Text as="p" variant="bodyMd" fontWeight="semibold">
+                            {receipt.totalQty} units · {receipt.lineCount} line
+                            {receipt.lineCount === 1 ? "" : "s"}
+                          </Text>
+                          <Button
+                            url={`/app/purchase-orders/${po.id}/receipts/${receipt.id}/edit`}
+                            size="slim"
+                          >
+                            Correct
+                          </Button>
+                        </InlineStack>
                         <Text as="p" variant="bodySm" tone="subdued">
                           {receipt.createdLabel}
                           {receipt.note ? ` · ${receipt.note}` : ""}

@@ -35,7 +35,10 @@ function LoginForm() {
       return;
     }
 
-    router.push("/");
+    const next = searchParams.get("next");
+    const safeNext =
+      next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+    router.push(safeNext);
     router.refresh();
   }
 
@@ -91,7 +94,21 @@ function LoginForm() {
         </form>
         <p className="small muted" style={{ margin: "16px 0 0" }}>
           No account yet?{" "}
-          <Link href="/signup" style={{ color: "var(--accent)", fontWeight: 600 }}>
+          <Link
+            href={
+              (() => {
+                const next = searchParams.get("next");
+                const safe =
+                  next && next.startsWith("/") && !next.startsWith("//")
+                    ? next
+                    : null;
+                return safe
+                  ? `/signup?next=${encodeURIComponent(safe)}`
+                  : "/signup";
+              })()
+            }
+            style={{ color: "var(--accent)", fontWeight: 600 }}
+          >
             Create one
           </Link>
         </p>

@@ -41,6 +41,7 @@ export async function updateSession(request: NextRequest) {
   const isPublicRoute =
     path.startsWith("/login") ||
     path.startsWith("/signup") ||
+    path.startsWith("/invite/") ||
     path.startsWith("/auth") ||
     path.startsWith("/s/") ||
     path.startsWith("/api/cron/");
@@ -58,9 +59,10 @@ export async function updateSession(request: NextRequest) {
     path === "/login" && request.nextUrl.searchParams.get("error") === "profile";
 
   if (user && (path === "/login" || path === "/signup") && !profileError) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/";
-    return NextResponse.redirect(url);
+    const next = request.nextUrl.searchParams.get("next");
+    const safeNext =
+      next && next.startsWith("/") && !next.startsWith("//") ? next : "/";
+    return NextResponse.redirect(new URL(safeNext, request.url));
   }
 
   return supabaseResponse;

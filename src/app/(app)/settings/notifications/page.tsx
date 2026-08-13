@@ -25,7 +25,7 @@ export default async function NotificationSettingsPage() {
       .order("created_at"),
     supabase
       .from("notification_log")
-      .select("id, rule_type, po_id, sent_at, recipient_email, purchase_orders(po_number)")
+      .select("id, rule_type, po_id, dedupe_key, sent_at, recipient_email, purchase_orders(po_number)")
       .eq("workspace_id", workspaceId)
       .order("sent_at", { ascending: false })
       .limit(10),
@@ -135,13 +135,21 @@ export default async function NotificationSettingsPage() {
                   const po = row.purchase_orders as unknown as {
                     po_number: string;
                   } | null;
+                  const dedupe = (row as { dedupe_key?: string | null })
+                    .dedupe_key;
+                  const label =
+                    po?.po_number ??
+                    (row.rule_type === "inventory_low" ||
+                    dedupe?.startsWith("inventory_low:")
+                      ? "Low-stock SKU"
+                      : "—");
                   return (
                     <tr key={row.id}>
                       <td className="small muted">
                         {relativeTime(row.sent_at)}
                       </td>
                       <td className="small">{row.rule_type}</td>
-                      <td className="po-number">{po?.po_number ?? "—"}</td>
+                      <td className="po-number">{label}</td>
                       <td className="small muted">{row.recipient_email}</td>
                     </tr>
                   );

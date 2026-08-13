@@ -22,6 +22,7 @@ export const RULE_COPY: Record<
   inventory_low: {
     title: "Inventory low",
     description:
-      "Requires Shopify inventory sync (not wired yet). Rule is saved but will not send until levels are available.",
+      "Email when synced on-hand inventory is at or below the reorder point (per-product threshold when set, otherwise this workspace default).",
+    thresholdLabel: "Default on-hand threshold",
   },
 };

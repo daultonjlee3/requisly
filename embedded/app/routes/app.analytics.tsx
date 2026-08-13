@@ -22,6 +22,7 @@ import {
 } from "@shopify/polaris-icons";
 import { BarChart, LineChart } from "@shopify/polaris-viz";
 import { TitleBar } from "@shopify/app-bridge-react";
+import { useCallback } from "react";
 import { AiInsightsPanel } from "../components/AiInsightsPanel";
 import { SectionHeading } from "../components/SectionHeading";
 import {
@@ -31,6 +32,7 @@ import {
   workspaceIsInsightEligible,
 } from "../lib/ai-agents.server";
 import { loadAnalytics } from "../lib/analytics.server";
+import { downloadCsv, stampFilename, toCsv } from "../lib/csv";
 import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
 import { getMerchantContext } from "../lib/merchant.server";
 
@@ -88,6 +90,25 @@ export default function AnalyticsPage() {
     navigation.state !== "idle" &&
     navigation.formData?.get("intent") === "generate_insights";
 
+  const exportCsv = useCallback(() => {
+    const rows: Array<Array<string | number | null>> = [
+      ...analytics.spendBySupplier.map((s) => [
+        "supplier",
+        s.supplierName,
+        s.count,
+        Number(s.totalRaw.toFixed(2)),
+      ]),
+      ...analytics.spendByMonthExport.map((m) => [
+        "month",
+        m.month,
+        null,
+        Number(m.spend.toFixed(2)),
+      ]),
+    ];
+    const csv = toCsv(["type", "name", "closed_pos", "spend"], rows);
+    downloadCsv(stampFilename("analytics-spend"), csv);
+  }, [analytics.spendBySupplier, analytics.spendByMonthExport]);
+
   const spendSeries = [
     {
       name: "Closed spend",
@@ -109,7 +130,20 @@ export default function AnalyticsPage() {
   ];
 
   return (
-    <Page title="Analytics" subtitle={workspaceName}>
+    <Page
+      title="Analytics"
+      subtitle={workspaceName}
+      secondaryActions={[
+        {
+          content: "Export",
+          onAction: exportCsv,
+          disabled:
+            analytics.loadError != null ||
+            (analytics.spendBySupplier.length === 0 &&
+              analytics.spendByMonthExport.length === 0),
+        },
+      ]}
+    >
       <TitleBar title="Analytics" />
       <BlockStack gap="500">
         {analytics.loadError ? (

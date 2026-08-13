@@ -12,6 +12,7 @@ import {
   Button,
   Card,
   EmptyState,
+  Filters,
   IndexTable,
   InlineStack,
   Page,
@@ -19,6 +20,7 @@ import {
 } from "@shopify/polaris";
 import { InventoryIcon, ProductIcon } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
+import { useMemo, useState } from "react";
 import { SectionHeading } from "../components/SectionHeading";
 import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
 import { getMerchantContext } from "../lib/merchant.server";
@@ -54,6 +56,28 @@ export default function ProductsPage() {
   const navigate = useNavigate();
   const navigation = useNavigation();
   const syncing = navigation.state !== "idle" && navigation.formData != null;
+  const [queryValue, setQueryValue] = useState("");
+
+  const filteredCatalog = useMemo(() => {
+    const q = queryValue.trim().toLowerCase();
+    if (!q) return catalog;
+    return catalog.filter((row) => {
+      const hay =
+        `${row.title} ${row.sku} ${row.supplierName}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [catalog, queryValue]);
+
+  const filteredVariants = useMemo(() => {
+    const q = queryValue.trim().toLowerCase();
+    if (!q) return variants;
+    return variants.filter((row) => {
+      const hay = `${row.title} ${row.sku}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [variants, queryValue]);
+
+  const hasAnyRows = catalog.length > 0 || variants.length > 0;
 
   return (
     <Page
@@ -81,6 +105,19 @@ export default function ProductsPage() {
           </Form>
         </InlineStack>
 
+        {hasAnyRows ? (
+          <Card padding="0">
+            <Filters
+              queryValue={queryValue}
+              queryPlaceholder="Search by name or SKU"
+              filters={[]}
+              onQueryChange={setQueryValue}
+              onQueryClear={() => setQueryValue("")}
+              onClearAll={() => setQueryValue("")}
+            />
+          </Card>
+        ) : null}
+
         <Card>
           <BlockStack gap="300">
             <SectionHeading
@@ -96,10 +133,17 @@ export default function ProductsPage() {
               >
                 <p>Add products with effective unit costs for PO line picking.</p>
               </EmptyState>
+            ) : filteredCatalog.length === 0 ? (
+              <EmptyState
+                heading="No catalog products match"
+                image={EMPTY_STATE_IMAGE.products}
+              >
+                <p>Try a different product name or SKU.</p>
+              </EmptyState>
             ) : (
               <IndexTable
                 resourceName={{ singular: "product", plural: "products" }}
-                itemCount={catalog.length}
+                itemCount={filteredCatalog.length}
                 headings={[
                   { title: "Product" },
                   { title: "Supplier" },
@@ -109,7 +153,7 @@ export default function ProductsPage() {
                 ]}
                 selectable={false}
               >
-                {catalog.map((row, index) => (
+                {filteredCatalog.map((row, index) => (
                   <IndexTable.Row
                     id={row.id}
                     key={row.id}
@@ -154,10 +198,17 @@ export default function ProductsPage() {
                   </Button>
                 </Form>
               </EmptyState>
+            ) : filteredVariants.length === 0 ? (
+              <EmptyState
+                heading="No Shopify variants match"
+                image={EMPTY_STATE_IMAGE.products}
+              >
+                <p>Try a different title or SKU.</p>
+              </EmptyState>
             ) : (
               <IndexTable
                 resourceName={{ singular: "variant", plural: "variants" }}
-                itemCount={variants.length}
+                itemCount={filteredVariants.length}
                 headings={[
                   { title: "Title" },
                   { title: "SKU" },
@@ -166,7 +217,7 @@ export default function ProductsPage() {
                 ]}
                 selectable={false}
               >
-                {variants.map((row, index) => (
+                {filteredVariants.map((row, index) => (
                   <IndexTable.Row id={row.id} key={row.id} position={index}>
                     <IndexTable.Cell>{row.title}</IndexTable.Cell>
                     <IndexTable.Cell>{row.sku}</IndexTable.Cell>

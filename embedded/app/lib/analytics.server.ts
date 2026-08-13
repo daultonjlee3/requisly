@@ -18,9 +18,16 @@ export type AnalyticsData = {
     fillRate: string;
     avgConfirmDays: string;
   }>;
-  spendBySupplier: Array<{ supplierName: string; total: string; count: number }>;
+  spendBySupplier: Array<{
+    supplierName: string;
+    total: string;
+    totalRaw: number;
+    count: number;
+  }>;
   /** Monthly closed-PO spend for Polaris Viz. */
   spendByMonth: AnalyticsChartPoint[];
+  /** Same monthly spend with stable YYYY-MM keys for CSV export. */
+  spendByMonthExport: Array<{ month: string; label: string; spend: number }>;
   /** Workspace-level monthly on-time rate (0–100) for Polaris Viz. */
   onTimeByMonth: AnalyticsChartPoint[];
   closedCount: number;
@@ -93,6 +100,7 @@ export async function loadAnalytics(workspaceId: string): Promise<AnalyticsData>
       scorecards: [],
       spendBySupplier: [],
       spendByMonth: [],
+      spendByMonthExport: [],
       onTimeByMonth: [],
       closedCount: 0,
       loadError: failures.join(" · "),
@@ -147,6 +155,14 @@ export async function loadAnalytics(workspaceId: string): Promise<AnalyticsData>
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => ({ key: monthLabel(key), value }));
 
+  const spendByMonthExport = [...spendMonth.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, spend]) => ({
+      month: key,
+      label: monthLabel(key),
+      spend,
+    }));
+
   const onTimeByMonth = [...onTimeMonth.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, v]) => ({
@@ -170,10 +186,12 @@ export async function loadAnalytics(workspaceId: string): Promise<AnalyticsData>
       .map(([id, v]) => ({
         supplierName: nameById.get(id) ?? "—",
         total: money(v.total),
+        totalRaw: v.total,
         count: v.count,
       }))
       .sort((a, b) => b.count - a.count),
     spendByMonth,
+    spendByMonthExport,
     onTimeByMonth,
   };
 }

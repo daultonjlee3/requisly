@@ -83,7 +83,7 @@ export async function addMerchantShipment(opts: {
     .eq("workspace_id", opts.workspaceId)
     .maybeSingle();
   if (error || !po) throw new Error(error?.message ?? "PO not found");
-  if (["draft", "rejected", "closed", "received"].includes(po.status)) {
+  if (["draft", "rejected", "cancelled", "closed", "received"].includes(po.status)) {
     throw new Error("Cannot add a shipment in the current PO status");
   }
 

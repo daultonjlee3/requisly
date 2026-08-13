@@ -4,6 +4,7 @@ import type {
   NotificationRuleType,
   PendingNotification,
 } from "@/lib/notifications/types";
+import { listLowStockVariants } from "../../../embedded/app/lib/low-stock.server";
 
 function appBaseUrl() {
   return (
@@ -14,6 +15,10 @@ function appBaseUrl() {
 
 function poUrl(poId: string) {
   return `${appBaseUrl()}/purchase-orders/${poId}`;
+}
+
+function productsUrl() {
+  return `${appBaseUrl()}/products`;
 }
 
 function todayUTC() {
@@ -30,6 +35,16 @@ function daysAgoISO(days: number) {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - days);
   return d.toISOString();
+}
+
+function dedupeKey(opts: {
+  ruleType: string;
+  poId?: string | null;
+  dedupeKey?: string | null;
+  email: string;
+}) {
+  const entity = opts.dedupeKey ?? opts.poId ?? "";
+  return `${opts.ruleType}:${entity}:${opts.email}`;
 }
 
 export async function evaluateWorkspaceNotifications(
@@ -61,14 +76,19 @@ export async function evaluateWorkspaceNotifications(
 
   const { data: alreadySent, error: logError } = await admin
     .from("notification_log")
-    .select("rule_type, po_id, recipient_email")
+    .select("rule_type, po_id, dedupe_key, recipient_email")
     .eq("workspace_id", workspaceId);
 
   if (logError) throw new Error(logError.message);
 
   const sentKeys = new Set(
-    (alreadySent ?? []).map(
-      (row) => `${row.rule_type}:${row.po_id ?? ""}:${row.recipient_email}`,
+    (alreadySent ?? []).map((row) =>
+      dedupeKey({
+        ruleType: row.rule_type,
+        poId: row.po_id,
+        dedupeKey: row.dedupe_key,
+        email: row.recipient_email,
+      }),
     ),
   );
 
@@ -78,13 +98,19 @@ export async function evaluateWorkspaceNotifications(
     const candidates = await candidatesForRule(admin, workspaceId, rule);
     for (const candidate of candidates) {
       for (const email of recipients) {
-        const key = `${rule.rule_type}:${candidate.po_id}:${email}`;
+        const key = dedupeKey({
+          ruleType: rule.rule_type,
+          poId: candidate.po_id,
+          dedupeKey: candidate.dedupe_key,
+          email,
+        });
         if (sentKeys.has(key)) continue;
         pending.push({
           workspace_id: workspaceId,
           rule_type: rule.rule_type,
           po_id: candidate.po_id,
           po_number: candidate.po_number,
+          dedupe_key: candidate.dedupe_key ?? null,
           recipient_email: email,
           subject: candidate.subject,
           body: candidate.body,
@@ -96,11 +122,19 @@ export async function evaluateWorkspaceNotifications(
   return pending;
 }
 
+type Candidate = {
+  po_id: string | null;
+  po_number: string;
+  dedupe_key?: string | null;
+  subject: string;
+  body: string;
+};
+
 async function candidatesForRule(
   admin: SupabaseClient,
   workspaceId: string,
   rule: NotificationRule,
-): Promise<Array<{ po_id: string; po_number: string; subject: string; body: string }>> {
+): Promise<Candidate[]> {
   switch (rule.rule_type as NotificationRuleType) {
     case "po_not_confirmed": {
       const days = rule.threshold_value ?? 2;
@@ -177,8 +211,26 @@ async function candidatesForRule(
     }
 
     case "inventory_low": {
-      // Requires Shopify inventory sync (Milestone 4). No-op until levels are cached.
-      return [];
+      const { variants } = await listLowStockVariants(admin, workspaceId, {
+        ruleThreshold: rule.threshold_value,
+      });
+
+      return variants.map((v) => {
+        const label = v.sku ? `${v.title} (${v.sku})` : v.title;
+        return {
+          po_id: null,
+          po_number: label,
+          dedupe_key: `inventory_low:${v.productVariantId}`,
+          subject: `Low stock: ${label}`,
+          body: [
+            `${label} is at or below its reorder point.`,
+            `On hand: ${v.onHand} (threshold: ${v.threshold}).`,
+            "",
+            `Review products: ${productsUrl()}`,
+            "Open Requisly in Shopify Admin → Products or New PO to restock.",
+          ].join("\n"),
+        };
+      });
     }
 
     default:

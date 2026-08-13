@@ -83,6 +83,27 @@ export type ReceiveFormData = {
   lines: ReceiveLine[];
 };
 
+export type CorrectReceiptLine = {
+  id: string;
+  poLineItemId: string;
+  description: string;
+  orderedQty: number;
+  qtyReceived: number;
+  condition: ReceiptCondition;
+  reasonNote: string | null;
+};
+
+export type CorrectReceiptFormData = {
+  receiptId: string;
+  poId: string;
+  poNumber: string;
+  supplierName: string;
+  locationName: string;
+  note: string | null;
+  createdAt: string;
+  lines: CorrectReceiptLine[];
+};
+
 export type DashRow = {
   id: string;
   href: string;

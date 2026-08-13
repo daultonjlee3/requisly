@@ -284,6 +284,7 @@ export function SupplierLinkClient({ token }: { token: string }) {
   }
 
   const rejected = data.po.status === "rejected";
+  const cancelled = data.po.status === "cancelled";
   const confirmationStale = Boolean(data.po.confirmation_stale);
   const confirmed = [
     "confirmed",
@@ -294,7 +295,9 @@ export function SupplierLinkClient({ token }: { token: string }) {
     "received",
     "closed",
   ].includes(data.po.status);
-  const closedOut = ["closed", "received", "rejected"].includes(data.po.status);
+  const closedOut = ["closed", "received", "rejected", "cancelled"].includes(
+    data.po.status,
+  );
   const canShip =
     !closedOut &&
     ["confirmed", "production", "shipped", "in_transit", "partially_received"].includes(
@@ -302,9 +305,13 @@ export function SupplierLinkClient({ token }: { token: string }) {
     );
   const showConfirmCard =
     !rejected &&
+    !cancelled &&
     !closedOut &&
     (confirmationStale || ["sent", "viewed"].includes(data.po.status));
-  const canPropose = !rejected && ["sent", "viewed"].includes(data.po.status);
+  const canPropose =
+    !rejected &&
+    !cancelled &&
+    ["sent", "viewed"].includes(data.po.status);
   const pendingByLine = new Map(
     (data.pending_proposals ?? []).map((p) => [p.po_line_item_id, p]),
   );
@@ -335,7 +342,20 @@ export function SupplierLinkClient({ token }: { token: string }) {
           </div>
         ) : null}
 
-        {confirmationStale && !rejected ? (
+        {cancelled ? (
+          <div
+            className="confirmed-banner"
+            style={{
+              background: "var(--status-alert-wash)",
+              color: "var(--status-alert)",
+            }}
+          >
+            The buyer cancelled this purchase order. No further updates can be
+            made from this link.
+          </div>
+        ) : null}
+
+        {confirmationStale && !rejected && !cancelled ? (
           <div
             className="confirmed-banner"
             style={{
@@ -349,7 +369,7 @@ export function SupplierLinkClient({ token }: { token: string }) {
           </div>
         ) : null}
 
-        {confirmed && !rejected && !confirmationStale ? (
+        {confirmed && !rejected && !cancelled && !confirmationStale ? (
           <div className="confirmed-banner">
             ✓ You confirmed this order
             {data.po.confirmed_ship_date

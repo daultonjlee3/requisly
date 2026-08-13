@@ -8,6 +8,7 @@ import type {
 } from "./po-types";
 import {
   buildTimelineState,
+  canCancelPurchaseOrder,
   statusBadgeTone,
   statusLabel,
   timelineProgress,
@@ -67,6 +68,7 @@ export type PurchaseOrderDetail = {
   estimatedArrivalDate: string;
   canReceive: boolean;
   canClose: boolean;
+  canCancel: boolean;
   canSend: boolean;
   canEdit: boolean;
   confirmationStale: boolean;
@@ -274,6 +276,7 @@ export async function getPurchaseOrderDetail(
       status,
     ),
     canClose: status === "partially_received",
+    canCancel: canCancelPurchaseOrder(status),
     canSend:
       status === "draft" ||
       status === "sent" ||
@@ -1020,6 +1023,51 @@ export async function duplicatePurchaseOrder(opts: {
   });
 
   return { id: po.id };
+}
+
+/**
+ * Merchant cancel — distinct from supplier `rejected`.
+ * Allowed on any PO that is not already received / closed / rejected / cancelled.
+ */
+export async function cancelPurchaseOrder(opts: {
+  workspaceId: string;
+  poId: string;
+  note?: string | null;
+}): Promise<void> {
+  const supabase = createServiceClient();
+  const { data: po, error } = await supabase
+    .from("purchase_orders")
+    .select("id, status")
+    .eq("id", opts.poId)
+    .eq("workspace_id", opts.workspaceId)
+    .maybeSingle();
+  if (error || !po) throw new Error(error?.message ?? "PO not found");
+
+  const status = po.status as PoStatus;
+  if (!canCancelPurchaseOrder(status)) {
+    throw new Error(
+      "Cancel is only available before the PO is received, closed, or rejected",
+    );
+  }
+
+  const { error: updateError } = await supabase
+    .from("purchase_orders")
+    .update({ status: "cancelled", updated_at: new Date().toISOString() })
+    .eq("id", opts.poId)
+    .eq("workspace_id", opts.workspaceId);
+  if (updateError) throw new Error(updateError.message);
+
+  const note = opts.note?.trim() || null;
+  const { error: eventError } = await supabase.from("po_timeline_events").insert({
+    po_id: opts.poId,
+    event_type: "cancelled",
+    actor: "merchant",
+    metadata: {
+      reason: "merchant_cancel",
+      ...(note ? { note } : {}),
+    },
+  });
+  if (eventError) throw new Error(eventError.message);
 }
 
 export async function resolveProposal(opts: {

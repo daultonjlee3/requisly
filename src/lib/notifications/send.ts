@@ -47,6 +47,7 @@ export async function sendPendingNotifications(
         workspace_id: item.workspace_id,
         rule_type: item.rule_type,
         po_id: item.po_id,
+        dedupe_key: item.dedupe_key ?? null,
         recipient_email: item.recipient_email,
       });
 

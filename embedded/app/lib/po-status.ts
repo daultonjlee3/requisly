@@ -10,7 +10,8 @@ export type PoStatus =
   | "partially_received"
   | "received"
   | "closed"
-  | "rejected";
+  | "rejected"
+  | "cancelled";
 
 export type TimelineEvent = {
   id: string;
@@ -37,9 +38,10 @@ export const TIMELINE_STEPS: {
   { key: "received", label: "Received" },
   { key: "closed", label: "Closed" },
   { key: "rejected", label: "Rejected", terminalAlternate: true },
+  { key: "cancelled", label: "Cancelled", terminalAlternate: true },
 ];
 
-/** Kanban columns = full golden workflow including Rejected. */
+/** Kanban columns = full golden workflow including Rejected / Cancelled. */
 export const KANBAN_COLUMNS = TIMELINE_STEPS;
 
 const ORDER = TIMELINE_STEPS.map((s) => s.key);
@@ -69,6 +71,7 @@ export function statusBadgeTone(
     case "partially_received":
       return "warning";
     case "rejected":
+    case "cancelled":
       return "critical";
     default:
       return undefined;
@@ -76,6 +79,10 @@ export function statusBadgeTone(
 }
 
 export type TimelineStepState = "done" | "current" | "future" | "skip";
+
+function isTerminalAlternate(status: PoStatus): boolean {
+  return status === "rejected" || status === "cancelled";
+}
 
 export function buildTimelineState(
   currentStatus: PoStatus,
@@ -88,20 +95,25 @@ export function buildTimelineState(
     }
   }
 
-  const isRejected = currentStatus === "rejected";
+  const terminal = isTerminalAlternate(currentStatus);
   const currentRank = statusRank(currentStatus);
 
   return TIMELINE_STEPS.filter((step) => {
-    if (step.key === "rejected") return isRejected || byType.has("rejected");
+    if (step.key === "rejected") {
+      return currentStatus === "rejected" || byType.has("rejected");
+    }
+    if (step.key === "cancelled") {
+      return currentStatus === "cancelled" || byType.has("cancelled");
+    }
     return true;
   }).map((step) => {
     const event = byType.get(step.key);
     const stepRank = statusRank(step.key);
     const isCurrent = step.key === currentStatus;
 
-    if (isRejected) {
+    if (terminal) {
       let state: TimelineStepState = "future";
-      if (step.key === "rejected") state = "current";
+      if (step.key === currentStatus) state = "current";
       else if (event || stepRank <= statusRank("viewed")) state = "done";
       else if (step.skippable) state = "skip";
       return {
@@ -130,11 +142,16 @@ export function buildTimelineState(
   });
 }
 
-/** Progress 0–100 across the happy-path spine (excludes Rejected). */
+/** Progress 0–100 across the happy-path spine (excludes Rejected / Cancelled). */
 export function timelineProgress(currentStatus: PoStatus): number {
   const happy = TIMELINE_STEPS.filter((s) => !s.terminalAlternate);
-  if (currentStatus === "rejected") return 0;
+  if (isTerminalAlternate(currentStatus)) return 0;
   const idx = happy.findIndex((s) => s.key === currentStatus);
   if (idx < 0) return 0;
   return Math.round(((idx + 1) / happy.length) * 100);
+}
+
+/** Merchant may cancel any PO that is not already terminal on receipt/close/reject/cancel. */
+export function canCancelPurchaseOrder(status: PoStatus): boolean {
+  return !["received", "closed", "rejected", "cancelled"].includes(status);
 }

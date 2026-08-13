@@ -18,9 +18,10 @@ export const TIMELINE_STEPS: {
   { key: "received", label: "Received" },
   { key: "closed", label: "Closed" },
   { key: "rejected", label: "Rejected", terminalAlternate: true },
+  { key: "cancelled", label: "Cancelled", terminalAlternate: true },
 ];
 
-/** Kanban includes Rejected as its own column (terminal, off the happy path). */
+/** Kanban includes Rejected / Cancelled as terminal columns (off the happy path). */
 export const KANBAN_COLUMNS = TIMELINE_STEPS;
 
 const ORDER = TIMELINE_STEPS.map((s) => s.key);
@@ -44,6 +45,7 @@ export function statusChipClass(status: PoStatus): string {
       return "chip-transit";
     case "partially_received":
     case "rejected":
+    case "cancelled":
       return "chip-alert";
     case "received":
     case "closed":
@@ -57,6 +59,10 @@ export function statusRank(status: PoStatus): number {
   return ORDER.indexOf(status);
 }
 
+function isTerminalAlternate(status: PoStatus): boolean {
+  return status === "rejected" || status === "cancelled";
+}
+
 export function buildTimelineState(
   currentStatus: PoStatus,
   events: TimelineEvent[],
@@ -68,21 +74,25 @@ export function buildTimelineState(
     }
   }
 
-  const isRejected = currentStatus === "rejected";
+  const terminal = isTerminalAlternate(currentStatus);
   const currentRank = statusRank(currentStatus);
 
   return TIMELINE_STEPS.filter((step) => {
-    // Hide Rejected column on the timeline unless this PO was rejected
-    if (step.key === "rejected") return isRejected || byType.has("rejected");
+    if (step.key === "rejected") {
+      return currentStatus === "rejected" || byType.has("rejected");
+    }
+    if (step.key === "cancelled") {
+      return currentStatus === "cancelled" || byType.has("cancelled");
+    }
     return true;
   }).map((step) => {
     const event = byType.get(step.key);
     const stepRank = statusRank(step.key);
     const isCurrent = step.key === currentStatus;
 
-    if (isRejected) {
+    if (terminal) {
       let state: "done" | "current" | "future" | "skip" = "future";
-      if (step.key === "rejected") state = "current";
+      if (step.key === currentStatus) state = "current";
       else if (event || stepRank <= statusRank("viewed")) state = "done";
       else if (step.skippable) state = "skip";
       return {

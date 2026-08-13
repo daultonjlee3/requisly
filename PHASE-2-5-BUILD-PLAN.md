@@ -61,7 +61,9 @@ group by s.id, s.workspace_id;
 Depends entirely on Phase 2's data being real and trustworthy — in this demo build, that means depending on the *seeded* data instead, which is fine for seeing the UI but means the insights are only as good as the fake history you wrote.
 
 ### Approach
-No new core tables. This is a read layer over Phase 2's scorecards + spend data, run through an LLM call (Claude via API) to generate natural-language insights like the roadmap's own examples: <cite index="1-1">"Supplier A has been late on 6 of the last 10 orders,"</cite> <cite index="1-1">"Switch this SKU to Supplier B and save 8%."</cite>
+No new core tables beyond `ai_insights`. This is a read layer over Phase 2's scorecards + spend data, run through a **Claude Haiku** Messages API call to generate natural-language insights like the roadmap's own examples: <cite index="1-1">"Supplier A has been late on 6 of the last 10 orders,"</cite> <cite index="1-1">"Switch this SKU to Supplier B and save 8%."</cite>
+
+Implementation (embedded `ai-agents.server.ts` + `ai-narration.server.ts`): structured facts are assembled from SQL first; Claude Haiku 4.5 narrates the merchant-facing summary. If `ANTHROPIC_API_KEY` is missing or the API fails/times out, the same deterministic template strings are used so insights never blank out. Draft PO suggestions still require merchant review and are never auto-sent.
 
 ```sql
 create table ai_insights (
