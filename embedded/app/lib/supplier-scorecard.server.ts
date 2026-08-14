@@ -1,8 +1,12 @@
 import { createServiceClient } from "./supabase.server";
-import { money } from "./format";
+import { SCORECARD_MIN_COMPLETED_POS } from "./supplier-scorecard";
 
-/** Same threshold as Analytics / AI agents — never export thin history. */
-export const SCORECARD_MIN_COMPLETED_POS = 5;
+export {
+  SCORECARD_MIN_COMPLETED_POS,
+  daysLabel,
+  pctLabel,
+  spendLabel,
+} from "./supplier-scorecard";
 
 export type OnTimeTrendPoint = {
   month: string; // YYYY-MM
@@ -34,23 +38,6 @@ function monthLabel(key: string) {
   const [y, m] = key.split("-").map(Number);
   const d = new Date(Date.UTC(y, (m ?? 1) - 1, 1));
   return d.toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
-}
-
-export function pctLabel(value: number | null | undefined) {
-  if (value == null || Number.isNaN(Number(value))) return "—";
-  return `${Math.round(Number(value) * 100)}%`;
-}
-
-export function daysLabel(value: number | null | undefined) {
-  if (value == null || Number.isNaN(Number(value))) return "—";
-  const n = Number(value);
-  const abs = Math.abs(n);
-  const formatted = abs < 10 ? n.toFixed(1) : String(Math.round(n));
-  return `${formatted}d`;
-}
-
-export function spendLabel(value: number) {
-  return money(value);
 }
 
 /**

@@ -39,10 +39,10 @@ import {
 import {
   SCORECARD_MIN_COMPLETED_POS,
   daysLabel,
-  loadSupplierScorecardExport,
   pctLabel,
   spendLabel,
-} from "../lib/supplier-scorecard.server";
+} from "../lib/supplier-scorecard";
+import { loadSupplierScorecardExport } from "../lib/supplier-scorecard.server";
 import {
   addSupplierContact,
   deleteSupplierContact,
