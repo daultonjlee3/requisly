@@ -35,20 +35,43 @@ import { loadAnalytics } from "../lib/analytics.server";
 import { downloadCsv, stampFilename, toCsv } from "../lib/csv";
 import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
 import { getMerchantContext } from "../lib/merchant.server";
+import { resolveDemoWorkspaceId } from "../lib/onboarding.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: false });
+  const url = new URL(request.url);
+  const sample = url.searchParams.get("sample") === "1";
+
+  // Narrow, explicit exception to workspace scoping: sample Analytics loads
+  // the demo workspace read-only so merchants can preview real history.
+  let analyticsWorkspaceId = merchant.workspace.id;
+  let workspaceName = merchant.workspace.name;
+  let sampleMode = false;
+  if (sample) {
+    const demo = await resolveDemoWorkspaceId();
+    if (demo) {
+      analyticsWorkspaceId = demo.id;
+      workspaceName = demo.name;
+      sampleMode = true;
+    }
+  }
+
   const [analytics, gate, insights] = await Promise.all([
-    loadAnalytics(merchant.workspace.id),
-    workspaceIsInsightEligible(merchant.workspace.id),
-    listActiveInsights(merchant.workspace.id),
+    loadAnalytics(analyticsWorkspaceId),
+    workspaceIsInsightEligible(analyticsWorkspaceId),
+    sampleMode
+      ? Promise.resolve([])
+      : listActiveInsights(merchant.workspace.id),
   ]);
   return {
-    workspaceName: merchant.workspace.name,
+    workspaceName,
     analytics,
-    insightsEligible: gate.eligible,
-    insightsGateReason: gate.reason ?? null,
+    insightsEligible: sampleMode ? false : gate.eligible,
+    insightsGateReason: sampleMode
+      ? "Sample preview — insights stay on your workspace."
+      : (gate.reason ?? null),
     insights,
+    sampleMode,
   };
 };
 
@@ -56,23 +79,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: false });
   const form = await request.formData();
   const intent = String(form.get("intent") ?? "");
+  const url = new URL(request.url);
+  if (url.searchParams.get("sample") === "1") {
+    return { ok: false, generated: null, error: "Sample preview is read-only" };
+  }
 
   if (intent === "dismiss_insight") {
     const insightId = String(form.get("insightId") ?? "");
     if (insightId) {
       await dismissInsight(merchant.workspace.id, insightId);
     }
-    return { ok: true, generated: null as null };
+    return { ok: true, generated: null as null, error: null as string | null };
   }
 
   if (intent === "generate_insights") {
     const result = await runAllAgentsForWorkspace(merchant.workspace.id, {
       force: true,
     });
-    return { ok: true, generated: result };
+    return { ok: true, generated: result, error: null as string | null };
   }
 
-  return { ok: false, generated: null };
+  return { ok: false, generated: null, error: null as string | null };
 };
 
 export default function AnalyticsPage() {
@@ -82,6 +109,7 @@ export default function AnalyticsPage() {
     insightsEligible,
     insightsGateReason,
     insights,
+    sampleMode,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
@@ -132,7 +160,7 @@ export default function AnalyticsPage() {
   return (
     <Page
       title="Analytics"
-      subtitle={workspaceName}
+      subtitle={sampleMode ? `${workspaceName} (sample)` : workspaceName}
       secondaryActions={[
         {
           content: "Export",
@@ -146,6 +174,19 @@ export default function AnalyticsPage() {
     >
       <TitleBar title="Analytics" />
       <BlockStack gap="500">
+        {sampleMode ? (
+          <Banner
+            tone="warning"
+            title="You're viewing sample data"
+            action={{ content: "Back to my workspace", url: "/app/analytics" }}
+          >
+            <p>
+              This is the Requisly demo workspace — a narrow, read-only preview
+              of Analytics with real history. Nothing here writes to your store.
+            </p>
+          </Banner>
+        ) : null}
+
         {analytics.loadError ? (
           <Banner
             tone="critical"
@@ -191,7 +232,7 @@ export default function AnalyticsPage() {
               eligible={insightsEligible}
               gateReason={insightsGateReason}
               insights={insights}
-              showGenerate
+              showGenerate={!sampleMode}
               generating={generating}
             />
 

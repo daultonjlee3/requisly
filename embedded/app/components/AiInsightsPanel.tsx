@@ -23,6 +23,7 @@ const AGENT_LABEL: Record<string, string> = {
   reorder: "Reorder",
   documentation: "Documentation",
   hygiene: "Data hygiene",
+  reports: "Report",
 };
 
 const TYPE_TONE: Record<string, "info" | "warning" | "success" | "attention"> =
@@ -41,6 +42,8 @@ const TYPE_TONE: Record<string, "info" | "warning" | "success" | "attention"> =
     missing_documents_pattern: "attention",
     catalog_incomplete: "info",
     catalog_price_stale: "warning",
+    onboarding_nudge: "info",
+    pinned_report: "success",
   };
 
 export function AiInsightsPanel(props: {

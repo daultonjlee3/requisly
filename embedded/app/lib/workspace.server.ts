@@ -6,11 +6,12 @@ export type WorkspaceRow = {
   name: string;
   shopify_domain: string | null;
   shopify_synced_at: string | null;
+  orders_synced_at: string | null;
   is_demo: boolean;
 };
 
 const WORKSPACE_SELECT =
-  "id, name, shopify_domain, shopify_synced_at, is_demo" as const;
+  "id, name, shopify_domain, shopify_synced_at, orders_synced_at, is_demo" as const;
 
 /**
  * Auth bridge: resolve (or create) a Supabase workspace for the installed shop.

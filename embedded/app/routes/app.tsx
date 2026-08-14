@@ -105,6 +105,7 @@ export default function App() {
           <Link to="/app/products">Products</Link>
           <Link to="/app/calendar">Calendar</Link>
           <Link to="/app/analytics">Analytics</Link>
+          <Link to="/app/reports">Report Builder</Link>
           <Link to="/app/settings/team">Team</Link>
           <Link to="/app/settings/notifications">Notifications</Link>
         </NavMenu>

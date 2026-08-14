@@ -16,10 +16,10 @@ type CustomerPayload = {
 };
 
 /**
- * Requisly does not store Shopify Customer / Order records.
- * Data model is workspace → suppliers (B2B) → POs / receipts / catalog cache.
- * These handlers still search for accidental matches by customer email/phone
- * and always persist an audit row so compliance is not a no-op stub.
+ * Requisly stores a read-only Shopify Orders cache for Report Builder when
+ * read_orders is granted. Data model is otherwise workspace → suppliers (B2B)
+ * → POs / receipts / catalog. Compliance handlers search by customer email/id
+ * and always persist an audit row.
  */
 
 async function logComplianceEvent(opts: {
@@ -56,7 +56,7 @@ async function findWorkspaceId(shopDomain: string): Promise<string | null> {
 
 /**
  * customers/data_request — compile any stored data tied to this Shopify customer.
- * Expected result for Requisly: empty customer_data (supplier emails are not Shopify customers).
+ * Includes synced Orders cache rows (Report Builder) when present.
  */
 export async function handleCustomersDataRequest(
   shop: string,
@@ -64,6 +64,7 @@ export async function handleCustomersDataRequest(
 ): Promise<Record<string, unknown>> {
   const email = payload.customer?.email?.trim().toLowerCase() || null;
   const phone = payload.customer?.phone?.trim() || null;
+  const customerId = payload.customer?.id != null ? String(payload.customer.id) : null;
   const workspaceId = await findWorkspaceId(shop);
   const supabase = createServiceClient();
 
@@ -73,8 +74,10 @@ export async function handleCustomersDataRequest(
     phone,
     orders_requested: payload.orders_requested ?? [],
     note:
-      "Requisly does not store Shopify Customer or Order records. Supplier/contact emails are B2B merchant data, not storefront customers.",
+      "Requisly stores a read-only Orders cache for Report Builder when read_orders is granted. Supplier/contact emails are B2B merchant data, not storefront customers.",
     notification_log: [] as unknown[],
+    shopify_orders: [] as unknown[],
+    shopify_order_line_items: [] as unknown[],
   };
 
   if (workspaceId && email) {
@@ -86,12 +89,46 @@ export async function handleCustomersDataRequest(
     matches.notification_log = logs ?? [];
   }
 
+  if (workspaceId && (email || customerId)) {
+    let ordersQ = supabase
+      .from("shopify_orders")
+      .select(
+        "id, shopify_order_id, order_name, processed_at, total_price, customer_email, customer_shopify_id",
+      )
+      .eq("workspace_id", workspaceId);
+    if (email && customerId) {
+      ordersQ = ordersQ.or(
+        `customer_email.eq.${email},customer_shopify_id.eq.${customerId}`,
+      );
+    } else if (email) {
+      ordersQ = ordersQ.eq("customer_email", email);
+    } else if (customerId) {
+      ordersQ = ordersQ.eq("customer_shopify_id", customerId);
+    }
+    const { data: orders } = await ordersQ.limit(200);
+    matches.shopify_orders = orders ?? [];
+    const orderIds = (orders ?? []).map((o) => o.id);
+    if (orderIds.length) {
+      const { data: lines } = await supabase
+        .from("shopify_order_line_items")
+        .select(
+          "id, order_id, title, sku, quantity, unit_price, shopify_line_item_id",
+        )
+        .eq("workspace_id", workspaceId)
+        .in("order_id", orderIds);
+      matches.shopify_order_line_items = lines ?? [];
+    }
+  }
+
+  const held =
+    (Array.isArray(matches.notification_log) &&
+      (matches.notification_log as unknown[]).length > 0) ||
+    (Array.isArray(matches.shopify_orders) &&
+      (matches.shopify_orders as unknown[]).length > 0);
+
   const result = {
     action: "compiled",
-    customer_data_held: Boolean(
-      Array.isArray(matches.notification_log) &&
-        (matches.notification_log as unknown[]).length > 0,
-    ),
+    customer_data_held: held,
     data: matches,
   };
 
@@ -106,17 +143,19 @@ export async function handleCustomersDataRequest(
 }
 
 /**
- * customers/redact — delete any rows that match the Shopify customer email/phone.
- * Does not delete suppliers (B2B), POs, or catalog data.
+ * customers/redact — delete any rows that match the Shopify customer email/phone/id.
+ * Deletes Orders cache rows for that customer. Does not delete suppliers (B2B), POs, or catalog.
  */
 export async function handleCustomersRedact(
   shop: string,
   payload: CustomerPayload,
 ): Promise<Record<string, unknown>> {
   const email = payload.customer?.email?.trim().toLowerCase() || null;
+  const customerId = payload.customer?.id != null ? String(payload.customer.id) : null;
   const workspaceId = await findWorkspaceId(shop);
   const supabase = createServiceClient();
   let deletedNotifications = 0;
+  let deletedOrders = 0;
 
   if (workspaceId && email) {
     const { data, error } = await supabase
@@ -129,13 +168,35 @@ export async function handleCustomersRedact(
     deletedNotifications = data?.length ?? 0;
   }
 
+  if (workspaceId && (email || customerId)) {
+    let q = supabase
+      .from("shopify_orders")
+      .delete()
+      .eq("workspace_id", workspaceId)
+      .select("id");
+    if (email && customerId) {
+      q = q.or(
+        `customer_email.eq.${email},customer_shopify_id.eq.${customerId}`,
+      );
+    } else if (email) {
+      q = q.eq("customer_email", email);
+    } else if (customerId) {
+      q = q.eq("customer_shopify_id", customerId);
+    }
+    const { data, error } = await q;
+    if (error) throw new Error(error.message);
+    deletedOrders = data?.length ?? 0;
+    // Line items cascade via FK on order delete.
+  }
+
   const result = {
     action: "redacted",
     deleted_notification_log_rows: deletedNotifications,
+    deleted_shopify_orders: deletedOrders,
     shopify_customer_id: payload.customer?.id ?? null,
     orders_to_redact: payload.orders_to_redact ?? [],
     note:
-      "No Shopify customer/order tables exist. Supplier records are retained (not storefront customers).",
+      "Orders cache rows for this customer were removed when present. Supplier records are retained (not storefront customers).",
   };
 
   await logComplianceEvent({

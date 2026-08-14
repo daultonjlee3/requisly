@@ -43,6 +43,10 @@ import {
 } from "../lib/documents.server";
 import { getMerchantContext } from "../lib/merchant.server";
 import {
+  getOnboardingState,
+  markFirstPoCelebrated,
+} from "../lib/onboarding.server";
+import {
   listPoTemplates,
   savePurchaseOrderAsTemplate,
 } from "../lib/po-templates.server";
@@ -176,11 +180,17 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       return merchant.redirect(`/app/purchase-orders/${poId}`);
     }
     if (intent === "send") {
+      const onboarding = await getOnboardingState(merchant.workspace.id);
+      const wasFirstSend = onboarding.sentPoCount === 0;
       const result = await sendPurchaseOrder({
         workspaceId: merchant.workspace.id,
         poId,
         workspaceName: merchant.workspace.name,
       });
+      if (wasFirstSend && !onboarding.flags.first_po_celebrated_at) {
+        await markFirstPoCelebrated(merchant.workspace.id);
+        return merchant.redirect("/app?activated=1");
+      }
       return {
         error: null as string | null,
         sendUrl: result.url,

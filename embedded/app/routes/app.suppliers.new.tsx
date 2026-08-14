@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { Form, useActionData, useNavigation } from "@remix-run/react";
+import { Form, useActionData, useLoaderData, useNavigation } from "@remix-run/react";
 import {
   Banner,
   BlockStack,
@@ -16,14 +16,19 @@ import { createSupplier } from "../lib/suppliers.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   await getMerchantContext(request, { sync: false });
-  return null;
+  const url = new URL(request.url);
+  return { onboarding: url.searchParams.get("onboarding") === "1" };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: false });
   const formData = await request.formData();
+  const onboarding = String(formData.get("onboarding") ?? "") === "1";
   try {
     const { id } = await createSupplier(merchant.workspace.id, formData);
+    if (onboarding) {
+      return merchant.redirect(`/app/suppliers/${id}/price-sheet`);
+    }
     return merchant.redirect(`/app/suppliers/${id}`);
   } catch (err) {
     return {
@@ -33,6 +38,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function NewSupplier() {
+  const { onboarding } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const submitting = navigation.state !== "idle";
@@ -50,6 +56,9 @@ export default function NewSupplier() {
     >
       <TitleBar title="Add supplier" />
       <Form method="post">
+        {onboarding ? (
+          <input type="hidden" name="onboarding" value="1" />
+        ) : null}
         <input type="hidden" name="name" value={name} />
         <input type="hidden" name="email" value={email} />
         <input type="hidden" name="contact_name" value={contactName} />
@@ -58,6 +67,14 @@ export default function NewSupplier() {
         <input type="hidden" name="notes" value={notes} />
         <Card>
           <BlockStack gap="400">
+            {onboarding ? (
+              <Banner tone="info" title="Step 2 — add a supplier">
+                <p>
+                  After you save, you can upload their CSV price sheet and match
+                  SKUs to your Shopify catalog.
+                </p>
+              </Banner>
+            ) : null}
             {actionData?.error ? (
               <Banner tone="critical">
                 <p>{actionData.error}</p>
@@ -107,7 +124,7 @@ export default function NewSupplier() {
               />
             </FormLayout>
             <Button submit variant="primary" loading={submitting}>
-              Save supplier
+              {onboarding ? "Save and upload price sheet" : "Save supplier"}
             </Button>
           </BlockStack>
         </Card>

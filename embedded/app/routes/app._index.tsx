@@ -5,6 +5,7 @@ import {
   useLoaderData,
   useNavigation,
   useRevalidator,
+  useSearchParams,
 } from "@remix-run/react";
 import {
   Badge,
@@ -27,9 +28,13 @@ import {
   OrderIcon,
   PackageIcon,
   AlertCircleIcon,
+  ChartVerticalIcon,
 } from "@shopify/polaris-icons";
-import { TitleBar } from "@shopify/app-bridge-react";
+import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
+import { useEffect } from "react";
 import { AiInsightsPanel } from "../components/AiInsightsPanel";
+import { OnboardingChecklist } from "../components/OnboardingChecklist";
+import { OnboardingGuide } from "../components/OnboardingGuide";
 import { SectionHeading } from "../components/SectionHeading";
 import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
 import {
@@ -39,6 +44,12 @@ import {
 } from "../lib/ai-agents.server";
 import { loadDashboard } from "../lib/dashboard.server";
 import { getMerchantContext } from "../lib/merchant.server";
+import {
+  getOnboardingState,
+  markFirstPoCelebrated,
+  skipChecklist,
+} from "../lib/onboarding.server";
+import { listPinnedReports } from "../lib/report-builder.server";
 import type { DashRow } from "../lib/po-types";
 import { statusBadgeTone, statusLabel } from "../lib/po-status";
 import { syncShopifyCatalogGraphql } from "../lib/shopify-sync.server";
@@ -54,10 +65,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     url.searchParams.get("forceError") === "1";
 
   const merchant = await getMerchantContext(request, { sync: "auto" });
-  const [dashboard, gate, insights] = await Promise.all([
+  const onboarding = await getOnboardingState(merchant.workspace.id);
+  if (onboarding.showWelcome) {
+    return merchant.redirect("/app/welcome");
+  }
+
+  const [dashboard, gate, insights, pinnedReports] = await Promise.all([
     loadDashboard(merchant.workspace.id, { forceError }),
     workspaceIsInsightEligible(merchant.workspace.id),
     listActiveInsights(merchant.workspace.id, 5),
+    listPinnedReports(merchant.workspace.id, 5),
   ]);
 
   const ms = timer.end({
@@ -76,6 +93,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     insightsEligible: gate.eligible,
     insightsGateReason: gate.reason ?? null,
     insights,
+    pinnedReports,
+    onboarding,
     loaderMs: ms,
   };
 };
@@ -88,6 +107,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const merchant = await getMerchantContext(request, { sync: false });
     const insightId = String(form.get("insightId") ?? "");
     if (insightId) await dismissInsight(merchant.workspace.id, insightId);
+    return { sync: null, error: null as string | null };
+  }
+
+  if (intent === "skip_onboarding_checklist") {
+    const merchant = await getMerchantContext(request, { sync: false });
+    await skipChecklist(merchant.workspace.id);
+    return { sync: null, error: null as string | null };
+  }
+
+  if (intent === "celebrate_first_po") {
+    const merchant = await getMerchantContext(request, { sync: false });
+    await markFirstPoCelebrated(merchant.workspace.id);
     return { sync: null, error: null as string | null };
   }
 
@@ -125,14 +156,30 @@ export default function TodaysWork() {
     insightsEligible,
     insightsGateReason,
     insights,
+    pinnedReports,
+    onboarding,
     loaderMs,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const revalidator = useRevalidator();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const shopify = useAppBridge();
   const syncing = navigation.state !== "idle" && navigation.formData != null;
   const sync = actionData?.sync ?? null;
   const bannerError = actionData?.error ?? syncError;
+  const activated = searchParams.get("activated") === "1";
+
+  useEffect(() => {
+    if (!activated) return;
+    try {
+      shopify.toast.show(
+        "First PO sent — suppliers can open the link and confirm.",
+      );
+    } catch {
+      /* toast unavailable outside Admin */
+    }
+  }, [activated, shopify]);
 
   return (
     <Page
@@ -158,6 +205,38 @@ export default function TodaysWork() {
           </Form>
         </InlineStack>
 
+        {activated ? (
+          <Banner
+            tone="success"
+            title="You're live — first PO sent"
+            onDismiss={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete("activated");
+              setSearchParams(next, { replace: true });
+            }}
+          >
+            <p>
+              Supplier Link is ready. When they confirm or ship, it shows up
+              here on Today&apos;s Work — not three weeks later in a thread.
+            </p>
+          </Banner>
+        ) : null}
+
+        {onboarding.showChecklist ? (
+          <OnboardingChecklist
+            steps={onboarding.steps}
+            submitting={
+              navigation.state !== "idle" &&
+              navigation.formData?.get("intent") ===
+                "skip_onboarding_checklist"
+            }
+          />
+        ) : null}
+
+        {onboarding.showGuide ? (
+          <OnboardingGuide onboarding={onboarding} />
+        ) : null}
+
         {catalogSyncPending ? (
           <Banner tone="info" title="Catalog syncing…">
             <p>
@@ -177,7 +256,8 @@ export default function TodaysWork() {
             }}
           >
             <p>
-              This is not an empty board — the query failed. {dashboard.loadError}
+              This is not an empty board — the query failed.{" "}
+              {dashboard.loadError}
             </p>
           </Banner>
         ) : null}
@@ -186,6 +266,63 @@ export default function TodaysWork() {
           <Banner tone="warning" title="Catalog sync issue">
             <p>{bannerError}</p>
           </Banner>
+        ) : null}
+
+        {pinnedReports.length ? (
+          <Card>
+            <BlockStack gap="300">
+              <SectionHeading
+                title="Pinned reports"
+                icon={ChartVerticalIcon}
+                subtitle="Living tiles from Report Builder — dismiss anytime."
+              />
+              {pinnedReports.map((pin) => {
+                const support = (pin.supporting_data ?? {}) as {
+                  title?: string;
+                  template_id?: string;
+                };
+                return (
+                  <BlockStack key={pin.id} gap="200">
+                    <InlineStack align="space-between" blockAlign="center">
+                      <Badge tone="success">Report</Badge>
+                      <Text as="span" tone="subdued" variant="bodySm">
+                        {new Date(pin.generated_at).toLocaleString()}
+                      </Text>
+                    </InlineStack>
+                    <Text as="h3" variant="headingSm">
+                      {support.title ?? pin.summary}
+                    </Text>
+                    <Text as="p" variant="bodyMd">
+                      {pin.summary}
+                    </Text>
+                    <InlineStack gap="200">
+                      <Button
+                        url={`/app/reports`}
+                        onClick={() => undefined}
+                      >
+                        Open Report Builder
+                      </Button>
+                      <Form method="post">
+                        <input
+                          type="hidden"
+                          name="intent"
+                          value="dismiss_insight"
+                        />
+                        <input
+                          type="hidden"
+                          name="insightId"
+                          value={pin.id}
+                        />
+                        <Button submit variant="plain">
+                          Dismiss
+                        </Button>
+                      </Form>
+                    </InlineStack>
+                  </BlockStack>
+                );
+              })}
+            </BlockStack>
+          </Card>
         ) : null}
 
         <AiInsightsPanel
@@ -203,7 +340,9 @@ export default function TodaysWork() {
           </Banner>
         ) : null}
 
-        {!dashboard.loadError && !dashboard.hasAnyPurchaseOrders ? (
+        {!dashboard.loadError &&
+        !dashboard.hasAnyPurchaseOrders &&
+        !onboarding.showChecklist ? (
           <Card>
             <EmptyState
               heading="Create your first purchase order"

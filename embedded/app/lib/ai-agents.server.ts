@@ -47,7 +47,8 @@ export type AgentName =
   | "quality"
   | "reorder"
   | "documentation"
-  | "hygiene";
+  | "hygiene"
+  | "reports";
 
 export type InsightType =
   | "daily_digest"
@@ -63,7 +64,9 @@ export type InsightType =
   | "missing_documents"
   | "missing_documents_pattern"
   | "catalog_incomplete"
-  | "catalog_price_stale";
+  | "catalog_price_stale"
+  | "onboarding_nudge"
+  | "pinned_report";
 
 export type AiInsightRow = {
   id: string;
@@ -2020,12 +2023,145 @@ export async function runDataHygieneAgent(
   return ids;
 }
 
+export function templateOnboardingNudge(opts: {
+  workspaceName: string;
+  nextStepLabel: string;
+  nextStepHref: string;
+  daysStalled: number;
+}) {
+  return {
+    summary: `You're ${opts.daysStalled}+ days into setup and still haven't finished — next up: ${opts.nextStepLabel}.`,
+    body: [
+      `Hi from Requisly Operations.`,
+      "",
+      `Your checklist for ${opts.workspaceName} is still open.`,
+      `Next step: ${opts.nextStepLabel}`,
+      `Open Requisly → Today's Work to continue (${opts.nextStepHref}).`,
+      "",
+      "Or skip the checklist anytime from Today's Work.",
+      "",
+      "— Requisly Operations Agent",
+    ].join("\n"),
+  };
+}
+
+/**
+ * Re-engagement when a merchant stalls mid-checklist.
+ * Does NOT require the closed-PO insights gate — new merchants need this.
+ */
+export async function runOnboardingNudgeAgent(
+  workspaceId: string,
+  opts?: { force?: boolean; supabase?: SupabaseClient },
+): Promise<string[]> {
+  const supabase = opts?.supabase ?? createServiceClient();
+  const {
+    getOnboardingState,
+    markOnboardingNudgeSent,
+    ONBOARDING_STALL_DAYS,
+  } = await import("./onboarding.server");
+
+  const state = await getOnboardingState(workspaceId, { supabase });
+  if (!state.flags.welcome_completed_at) return [];
+  if (state.flags.checklist_skipped_at) return [];
+  if (state.allStepsDone) return [];
+  if (!state.flags.stalled_at) return [];
+
+  const stalledMs =
+    Date.now() - Date.parse(state.flags.stalled_at);
+  const daysStalled = Math.floor(stalledMs / 86_400_000);
+  if (!opts?.force && daysStalled < ONBOARDING_STALL_DAYS) return [];
+
+  if (
+    !opts?.force &&
+    state.flags.last_nudge_at &&
+    Date.now() - Date.parse(state.flags.last_nudge_at) < 48 * 60 * 60 * 1000
+  ) {
+    return [];
+  }
+
+  if (
+    !opts?.force &&
+    (await hasRecentInsight(supabase, workspaceId, "onboarding_nudge", {
+      withinHours: 48,
+    }))
+  ) {
+    return [];
+  }
+
+  const next = state.steps.find((s) => !s.done);
+  if (!next) return [];
+
+  const { data: workspace } = await supabase
+    .from("workspaces")
+    .select("name")
+    .eq("id", workspaceId)
+    .maybeSingle();
+  const workspaceName = workspace?.name ?? "your workspace";
+
+  const composed = templateOnboardingNudge({
+    workspaceName,
+    nextStepLabel: next.label,
+    nextStepHref: next.href,
+    daysStalled: Math.max(daysStalled, ONBOARDING_STALL_DAYS),
+  });
+
+  const narrated = await narrateInsight({
+    insightType: "onboarding_nudge",
+    facts: {
+      workspace_name: workspaceName,
+      days_stalled: daysStalled,
+      next_step_label: next.label,
+      next_step_href: next.href,
+      checklist: state.steps,
+      supplier_count: state.supplierCount,
+      sent_po_count: state.sentPoCount,
+      cta: "Open Requisly in Shopify Admin → Today's Work to finish setup.",
+    },
+    fallback: { summary: composed.summary, body: composed.body },
+  });
+
+  const recipients = await resolveDigestRecipients(supabase, workspaceId);
+  const email = await sendDigestEmail({
+    to: recipients,
+    subject: `Finish setup in Requisly — ${next.label}`,
+    body: narrated.body ?? composed.body,
+  });
+
+  const insightId = await insertInsight(supabase, {
+    workspace_id: workspaceId,
+    agent: "operations",
+    insight_type: "onboarding_nudge",
+    summary: narrated.summary,
+    body: narrated.body ?? composed.body,
+    supporting_data: {
+      days_stalled: daysStalled,
+      next_step: next.id,
+      emailedTo: recipients,
+      emailSent: email.sent,
+      emailError: email.error ?? null,
+      narration_source: narrated.source,
+      narration_error: narrated.error ?? null,
+      model: narrated.source === "claude" ? "claude-haiku-4-5" : null,
+    },
+  });
+
+  await markOnboardingNudgeSent(workspaceId);
+  return [insightId];
+}
+
 /** Run all in-lane agents for one workspace. */
 export async function runAllAgentsForWorkspace(
   workspaceId: string,
   opts?: { force?: boolean },
 ): Promise<AgentRunResult> {
   const supabase = createServiceClient();
+
+  // Onboarding re-engagement runs even before the closed-PO insights gate.
+  const nudgeIds = await runOnboardingNudgeAgent(workspaceId, {
+    force: opts?.force,
+    supabase,
+  });
+
   const gate = await workspaceIsInsightEligible(workspaceId, supabase);
   if (!gate.eligible) {
     return {
@@ -2033,8 +2169,8 @@ export async function runAllAgentsForWorkspace(
       workspaceName: gate.name,
       eligible: false,
       reason: gate.reason,
-      insightsCreated: 0,
-      insightIds: [],
+      insightsCreated: nudgeIds.length,
+      insightIds: nudgeIds,
     };
   }
 
@@ -2049,6 +2185,7 @@ export async function runAllAgentsForWorkspace(
   const hygieneIds = await runDataHygieneAgent(workspaceId, agentOpts);
 
   const insightIds = [
+    ...nudgeIds,
     ...(ops.insightId ? [ops.insightId] : []),
     ...supplierIds,
     ...procurementIds,

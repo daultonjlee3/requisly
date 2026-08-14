@@ -201,6 +201,12 @@ export default function SupplierDetail() {
         content: "New PO",
         url: `/app/purchase-orders/new?supplier=${supplier.id}`,
       }}
+      secondaryActions={[
+        {
+          content: "Upload price sheet",
+          url: `/app/suppliers/${supplier.id}/price-sheet`,
+        },
+      ]}
     >
       <TitleBar title={supplier.name} />
       <BlockStack gap="400">
