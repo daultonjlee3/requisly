@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
-import { createAdminClient } from "@/lib/supabase/admin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Daily in-lane agents cron.
+ * Proxies the daily AI agents cron to the embedded Shopify app host.
  * Auth: Authorization: Bearer $CRON_SECRET
  *
- * Delegates to the embedded engine (same code as Analytics "Refresh insights").
+ * Prefer scheduling this on the embedded Vercel project directly
+ * (`/api/cron/ai-agents`). This root proxy remains for transition.
  */
 export async function GET(request: Request) {
   const secret = process.env.CRON_SECRET;
@@ -17,34 +17,45 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const url = new URL(request.url);
-  const force = url.searchParams.get("force") === "1";
-  const workspaceId = url.searchParams.get("workspace_id") ?? undefined;
+  const base = (
+    process.env.EMBEDDED_APP_URL ||
+    process.env.SHOPIFY_APP_URL ||
+    ""
+  ).replace(/\/$/, "");
+  if (!base) {
+    return NextResponse.json(
+      {
+        error:
+          "EMBEDDED_APP_URL (or SHOPIFY_APP_URL) is not set — AI cron runs on the embedded app host",
+      },
+      { status: 503 },
+    );
+  }
+
+  const incoming = new URL(request.url);
+  const target = new URL("/api/cron/ai-agents", base);
+  incoming.searchParams.forEach((value, key) => {
+    target.searchParams.set(key, value);
+  });
 
   try {
-    // Dynamic import keeps Remix-oriented *.server modules out of the edge bundle.
-    const { runAllAgentsForEligibleWorkspaces } = await import(
-      /* webpackIgnore: true */
-      "../../../../../embedded/app/lib/ai-agents.server"
-    );
-
-    // Ensure service client can resolve env (admin client proves keys exist).
-    createAdminClient();
-
-    const results = await runAllAgentsForEligibleWorkspaces({
-      force,
-      workspaceId,
+    const response = await fetch(target.toString(), {
+      method: "GET",
+      headers: { Authorization: `Bearer ${secret}` },
+      cache: "no-store",
     });
-
-    return NextResponse.json({
-      ok: true,
-      workspaces: results.length,
-      results,
+    const body = await response.text();
+    return new NextResponse(body, {
+      status: response.status,
+      headers: {
+        "Content-Type":
+          response.headers.get("Content-Type") || "application/json",
+      },
     });
   } catch (e) {
     return NextResponse.json(
-      { error: e instanceof Error ? e.message : "AI agents cron failed" },
-      { status: 500 },
+      { error: e instanceof Error ? e.message : "AI agents proxy failed" },
+      { status: 502 },
     );
   }
 }

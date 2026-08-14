@@ -4,21 +4,23 @@ import type {
   NotificationRuleType,
   PendingNotification,
 } from "@/lib/notifications/types";
-import { listLowStockVariants } from "../../../embedded/app/lib/low-stock.server";
+import { listLowStockVariants } from "@/lib/notifications/low-stock";
 
-function appBaseUrl() {
+/** Merchant deep links live on the embedded Shopify app host. */
+function merchantAppBaseUrl() {
   return (
-    process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ||
-    "http://localhost:3001"
+    process.env.EMBEDDED_APP_URL?.replace(/\/$/, "") ||
+    process.env.SHOPIFY_APP_URL?.replace(/\/$/, "") ||
+    "https://app.requisly.com"
   );
 }
 
 function poUrl(poId: string) {
-  return `${appBaseUrl()}/purchase-orders/${poId}`;
+  return `${merchantAppBaseUrl()}/app/purchase-orders/${poId}`;
 }
 
 function productsUrl() {
-  return `${appBaseUrl()}/products`;
+  return `${merchantAppBaseUrl()}/app/products`;
 }
 
 function todayUTC() {

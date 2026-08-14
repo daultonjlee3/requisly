@@ -27,7 +27,7 @@ export default async function InvitePage({ params, searchParams }: PageProps) {
     if (!result.ok) {
       redirect(`/invite/${token}?error=${encodeURIComponent(result.error)}`);
     }
-    redirect("/");
+    redirect("/invite/accepted");
   }
 
   return (

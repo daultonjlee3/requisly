@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "remix",
+  "installCommand": "npm install",
+  "buildCommand": "npx prisma generate && npm run build",
+  "crons": [
+    {
+      "path": "/api/cron/ai-agents",
+      "schedule": "0 13 * * *"
+    }
+  ]
+}

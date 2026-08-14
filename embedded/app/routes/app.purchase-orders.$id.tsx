@@ -197,6 +197,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         sendToken: result.token,
         pdfUrl: result.pdfUrl,
         pdfFileName: result.pdfFileName,
+        emailSent: result.emailSent,
+        emailError: result.emailError,
       };
     }
     if (intent === "arrival") {
@@ -227,6 +229,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       error: "Unknown action",
       sendUrl: null,
       sendToken: null,
+      emailSent: false,
+      emailError: null as string | null,
       pdfUrl: null,
       pdfFileName: null,
     };
@@ -235,6 +239,8 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       error: err instanceof Error ? err.message : "Action failed",
       sendUrl: null as string | null,
       sendToken: null as string | null,
+      emailSent: false,
+      emailError: null as string | null,
       pdfUrl: null as string | null,
       pdfFileName: null as string | null,
     };
@@ -796,7 +802,7 @@ export default function PurchaseOrderDetail() {
                     <Text as="p" tone="subdued" variant="bodySm">
                       {po.confirmationStale
                         ? "Resend so the supplier can confirm the edited PO."
-                        : "Generates a PO PDF, moves draft → sent, and creates a no-login Supplier Link."}
+                        : "Emails the supplier (one-click confirm/ship + Reply-To), generates a PO PDF, moves draft → sent, and creates a no-login Supplier Link."}
                     </Text>
                     <Form method="post">
                       <input type="hidden" name="intent" value="send" />
@@ -808,6 +814,18 @@ export default function PurchaseOrderDetail() {
                             : "Send to supplier"}
                       </Button>
                     </Form>
+                    {actionData?.emailSent ? (
+                      <Banner tone="success" title="Email sent to supplier">
+                        <p>
+                          Sent to {po.supplier.email || "supplier"} with
+                          one-click actions and Reply-To on inbound.requisly.com.
+                        </p>
+                      </Banner>
+                    ) : actionData?.emailError ? (
+                      <Banner tone="warning" title="Email not sent">
+                        <p>{actionData.emailError}</p>
+                      </Banner>
+                    ) : null}
                     {pdfUrl ? (
                       <Banner tone="success" title="PO PDF ready">
                         <p>

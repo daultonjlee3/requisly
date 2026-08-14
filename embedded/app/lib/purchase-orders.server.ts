@@ -664,8 +664,18 @@ export async function sendPurchaseOrder(opts: {
   pdfDocumentId: string;
   pdfUrl: string | null;
   pdfFileName: string;
+  emailSent: boolean;
+  emailError: string | null;
+  confirmAsIsUrl: string | null;
+  markShippedUrl: string | null;
 }> {
   const { generateAndStorePoPdf } = await import("./documents.server");
+  const { issueOneClickTokens } = await import("./supplier-one-click.server");
+  const {
+    inboundReplyToAddress,
+    sendPoSupplierEmail,
+  } = await import("./po-supplier-email.server");
+
   const pdf = await generateAndStorePoPdf({
     workspaceId: opts.workspaceId,
     poId: opts.poId,
@@ -675,7 +685,9 @@ export async function sendPurchaseOrder(opts: {
   const supabase = createServiceClient();
   const { data: po, error } = await supabase
     .from("purchase_orders")
-    .select("id, status, confirmation_stale")
+    .select(
+      "id, status, confirmation_stale, po_number, requested_ship_date, confirmed_ship_date, suppliers(name, email)",
+    )
     .eq("id", opts.poId)
     .eq("workspace_id", opts.workspaceId)
     .maybeSingle();
@@ -724,7 +736,7 @@ export async function sendPurchaseOrder(opts: {
         event_type: "sent",
         actor: "merchant",
         metadata: {
-          channel: "supplier_link",
+          channel: "email",
           pdf_document_id: pdf.id,
           resent_after_edit: canResendStale,
         },
@@ -732,13 +744,48 @@ export async function sendPurchaseOrder(opts: {
     if (eventError) throw new Error(eventError.message);
   }
 
+  const shipDate =
+    (po.confirmed_ship_date as string | null) ||
+    (po.requested_ship_date as string | null) ||
+    null;
+
+  const oneClick = await issueOneClickTokens({
+    workspaceId: opts.workspaceId,
+    poId: opts.poId,
+    shipDate,
+  });
+
   const base = supplierLinkBaseUrl();
+  const url = base ? `${base}/s/${token}` : null;
+
+  const supplier = po.suppliers as unknown as {
+    name: string;
+    email: string | null;
+  } | null;
+
+  const emailResult = await sendPoSupplierEmail({
+    to: supplier?.email?.trim() || "",
+    workspaceName: opts.workspaceName,
+    poNumber: String(po.po_number ?? "PO"),
+    supplierName: supplier?.name?.trim() || "Supplier",
+    shipDateLabel: shipDate ? shortDate(shipDate) : null,
+    confirmAsIsUrl: oneClick.confirmAsIsUrl,
+    markShippedUrl: oneClick.markShippedUrl,
+    supplierLinkUrl: url,
+    pdfUrl: pdf.downloadUrl,
+    replyTo: inboundReplyToAddress(token!),
+  });
+
   return {
     token: token!,
-    url: base ? `${base}/s/${token}` : null,
+    url,
     pdfDocumentId: pdf.id,
     pdfUrl: pdf.downloadUrl,
     pdfFileName: pdf.fileName,
+    emailSent: emailResult.sent,
+    emailError: emailResult.error ?? null,
+    confirmAsIsUrl: oneClick.confirmAsIsUrl,
+    markShippedUrl: oneClick.markShippedUrl,
   };
 }
 
