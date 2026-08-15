@@ -33,7 +33,11 @@ const shopify = shopifyApp({
     },
   },
   future: {
+    // Token-exchange embedded auth (session tokens → offline access token).
     unstable_newEmbeddedAuthStrategy: true,
+    // Required for apps created after 2026-04-01: expiring offline tokens + refresh.
+    // Prisma Session stores refreshToken / refreshTokenExpires; PrismaSessionStorage
+    // rotates accessToken via the refresh grant when expires is past.
     expiringOfflineAccessTokens: true,
   },
   ...(process.env.SHOP_CUSTOM_DOMAIN
@@ -50,9 +54,34 @@ export const login = shopify.login;
 export const registerWebhooks = shopify.registerWebhooks;
 export const sessionStorage = shopify.sessionStorage;
 
-/** Test charges in non-production unless explicitly disabled. */
+/**
+ * Test Billing API charges.
+ * Defaults to true outside production. Hard-refuses production so a stray
+ * SHOPIFY_BILLING_TEST=true cannot create test charges or trip the
+ * "continue without subscription" failure path in app.tsx.
+ */
 export function billingIsTest() {
+  if (isProductionRuntime()) return false;
   if (process.env.SHOPIFY_BILLING_TEST === "true") return true;
   if (process.env.SHOPIFY_BILLING_TEST === "false") return false;
-  return process.env.NODE_ENV !== "production";
+  return true;
+}
+
+/** True for Vercel production or NODE_ENV=production (non-preview). */
+export function isProductionRuntime() {
+  if (process.env.VERCEL_ENV === "production") return true;
+  if (process.env.VERCEL_ENV === "preview" || process.env.VERCEL_ENV === "development") {
+    return false;
+  }
+  return process.env.NODE_ENV === "production";
+}
+
+/**
+ * Billing gate bypass — LOCAL / preview QA only.
+ * Hard-refuses when VERCEL_ENV=production or NODE_ENV=production.
+ * Setting SHOPIFY_SKIP_BILLING=true on the production project is a no-op.
+ */
+export function billingSkipAllowed() {
+  if (isProductionRuntime()) return false;
+  return process.env.SHOPIFY_SKIP_BILLING === "true";
 }

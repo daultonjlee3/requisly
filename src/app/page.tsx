@@ -64,6 +64,11 @@ export default function MarketingHomePage() {
               Staff invite sign-in
             </Link>
           </div>
+          <p style={{ marginTop: 40, fontSize: 13, color: "#5c5c5c" }}>
+            <Link href="/privacy" style={{ color: "#5c5c5c" }}>
+              Privacy Policy
+            </Link>
+          </p>
         </div>
       </div>
     </main>

@@ -1,19 +1,23 @@
 # Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
 
 client_id = "aae0e4ae11ca6deb4d949eda0982fe2b"
-application_url = "https://shopify.dev/apps/default-app-home"
+application_url = "https://app.requisly.com"
 embedded = true
 name = "Requisly"
 
 [access_scopes]
-# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-# read_orders is optional so Report Builder can request it via App Bridge
-# (shopify.scopes.request) without a blank-screen /auth redirect in the iframe.
+# Core catalog/inventory scopes only.
+# read_orders is optional — Report Builder / velocity sync request it via App Bridge
+# (shopify.scopes.request). We never request write_orders (Orders sync is read-only).
 scopes = "read_inventory,read_locations,read_products,write_inventory"
 optional_scopes = [ "read_orders" ]
 
 [auth]
-redirect_urls = [ "https://shopify.dev/apps/default-app-home/api/auth" ]
+redirect_urls = [
+  "https://app.requisly.com/auth/callback",
+  "https://app.requisly.com/auth/shopify/callback",
+  "https://app.requisly.com/api/auth/callback"
+]
 
 [webhooks]
 api_version = "2026-10"
@@ -31,4 +35,5 @@ api_version = "2026-10"
   uri = "/webhooks/app/scopes_update"
 
 [build]
-automatically_update_urls_on_dev = true
+# Keep Partner URLs on app.requisly.com — do not overwrite with ephemeral Cloudflare tunnels.
+automatically_update_urls_on_dev = false

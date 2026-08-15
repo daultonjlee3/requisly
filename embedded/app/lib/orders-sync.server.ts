@@ -27,8 +27,10 @@ const ORDERS_QUERY = `#graphql
         id
         name
         processedAt
+        test
+        tags
+        note
         totalPriceSet { shopMoney { amount currencyCode } }
-        customer { id email }
         lineItems(first: 50) {
           nodes {
             id
@@ -116,8 +118,10 @@ export async function syncShopifyOrdersGraphql(opts: {
             id: string;
             name: string | null;
             processedAt: string | null;
+            test?: boolean | null;
+            tags?: string[] | null;
+            note?: string | null;
             totalPriceSet?: { shopMoney?: { amount?: string; currencyCode?: string } };
-            customer?: { id?: string; email?: string | null } | null;
             lineItems?: {
               nodes: Array<{
                 id: string;
@@ -136,7 +140,7 @@ export async function syncShopifyOrdersGraphql(opts: {
 
     if (json.errors?.length) {
       const msg = json.errors.map((e) => e.message).join("; ");
-      if (/ACCESS_DENIED|not approved|read_orders/i.test(msg)) {
+      if (/ACCESS_DENIED|not approved|read_orders|protected customer data/i.test(msg)) {
         timer.end({ skippedMissingScope: true });
         return { orders: 0, lineItems: 0, skippedMissingScope: true };
       }
@@ -149,6 +153,13 @@ export async function syncShopifyOrdersGraphql(opts: {
     for (const order of conn.nodes) {
       const shopifyOrderId = gidToNumericId(order.id) || order.id;
       const total = Number(order.totalPriceSet?.shopMoney?.amount ?? 0);
+      const tags = order.tags ?? [];
+      const isSynthetic =
+        tags.includes("requisly_synthetic_test") ||
+        Boolean(order.test) ||
+        (order.note ?? "").includes("[REQUISLY_SYNTHETIC_TEST]");
+      // Intentionally omit customer email/name/phone/address — PCD request is
+      // Order resource + line economics only. GDPR redact uses orders_to_redact IDs.
       const { data: upserted, error } = await supabase
         .from("shopify_orders")
         .upsert(
@@ -159,10 +170,11 @@ export async function syncShopifyOrdersGraphql(opts: {
             processed_at: order.processedAt,
             currency: order.totalPriceSet?.shopMoney?.currencyCode ?? "USD",
             total_price: Number.isFinite(total) ? total : 0,
-            customer_shopify_id: order.customer?.id
-              ? gidToNumericId(order.customer.id) || order.customer.id
-              : null,
-            customer_email: order.customer?.email?.trim().toLowerCase() || null,
+            customer_shopify_id: null,
+            customer_email: null,
+            tags,
+            note: order.note ?? null,
+            is_synthetic_test: isSynthetic,
             synced_at: new Date().toISOString(),
           },
           { onConflict: "workspace_id,shopify_order_id" },

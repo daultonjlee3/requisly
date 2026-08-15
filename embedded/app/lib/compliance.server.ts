@@ -16,10 +16,12 @@ type CustomerPayload = {
 };
 
 /**
- * Requisly stores a read-only Shopify Orders cache for Report Builder when
- * read_orders is granted. Data model is otherwise workspace → suppliers (B2B)
- * → POs / receipts / catalog. Compliance handlers search by customer email/id
- * and always persist an audit row.
+ * Requisly stores a read-only Shopify Orders cache for Report Builder /
+ * reorder velocity when read_orders (+ Protected Customer Data for Order
+ * resources) is granted. We do **not** persist storefront customer PII
+ * (email/name/phone/address) — only order/line economics. GDPR handlers
+ * match via orders_requested / orders_to_redact IDs from Shopify payloads.
+ * Supplier/contact emails are B2B merchant data, not storefront customers.
  */
 
 async function logComplianceEvent(opts: {

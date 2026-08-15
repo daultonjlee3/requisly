@@ -24,6 +24,8 @@ import polarisVizStyles from "@shopify/polaris-viz/build/esm/styles.css?url";
 import {
   authenticate,
   billingIsTest,
+  billingSkipAllowed,
+  isProductionRuntime,
   REQUISLY_PLAN,
 } from "../shopify.server";
 
@@ -35,13 +37,13 @@ export const links = () => [
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { billing } = await authenticate.admin(request);
   const isTest = billingIsTest();
-  const skipBilling = process.env.SHOPIFY_SKIP_BILLING === "true";
+  const skipBilling = billingSkipAllowed();
 
   let billingSkipped = false;
   let billingError: string | null = null;
 
   if (skipBilling) {
-    // Local/multi-store isolation testing only — never enable in production.
+    // Preview/local QA only — billingSkipAllowed() refuses production runtimes.
     billingSkipped = true;
   } else {
     try {
@@ -66,8 +68,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       console.error("[billing] require/request failed:", err);
 
       // Dev stores often can't complete Billing API charges (managed pricing
-      // lock-in, Plus-dev restrictions). Allow continuing local QA when test.
-      if (isTest) {
+      // lock-in, Plus-dev restrictions). Allow continuing local/preview QA when
+      // test billing is on — never in production (billingIsTest is hard-false there).
+      if (isTest && !isProductionRuntime()) {
         billingSkipped = true;
         billingError = detail;
       } else {
@@ -103,6 +106,7 @@ export default function App() {
           <Link to="/app/templates">Templates</Link>
           <Link to="/app/suppliers">Suppliers</Link>
           <Link to="/app/products">Products</Link>
+          <Link to="/app/reorder">Reorder</Link>
           <Link to="/app/calendar">Calendar</Link>
           <Link to="/app/analytics">Analytics</Link>
           <Link to="/app/reports">Report Builder</Link>
