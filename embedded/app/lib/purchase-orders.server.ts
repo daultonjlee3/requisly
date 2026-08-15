@@ -750,7 +750,7 @@ export async function sendPurchaseOrder(opts: {
   const { data: po, error } = await supabase
     .from("purchase_orders")
     .select(
-      "id, status, confirmation_stale, po_number, requested_ship_date, confirmed_ship_date, suppliers(name, email)",
+      "id, status, confirmation_stale, po_number, requested_ship_date, confirmed_ship_date, suppliers(name, email), po_line_items(description, qty, unit_cost, sort_order)",
     )
     .eq("id", opts.poId)
     .eq("workspace_id", opts.workspaceId)
@@ -852,12 +852,27 @@ export async function sendPurchaseOrder(opts: {
   const base = supplierLinkBaseUrl();
   const url = base ? `${base}/s/${token}` : null;
 
+  const rawLines = (po.po_line_items ?? []) as Array<{
+    description: string;
+    qty: number;
+    unit_cost: number;
+    sort_order: number | null;
+  }>;
+  const lines = [...rawLines]
+    .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+    .map((line) => ({
+      description: line.description,
+      qty: Number(line.qty),
+      unitCost: Number(line.unit_cost),
+    }));
+
   const emailResult = await sendPoSupplierEmail({
     to: emailTo,
     workspaceName: opts.workspaceName,
     poNumber: String(po.po_number ?? "PO"),
     supplierName: supplier?.name?.trim() || "Supplier",
     shipDateLabel: shipDate ? shortDate(shipDate) : null,
+    lines,
     confirmAsIsUrl: oneClick.confirmAsIsUrl,
     markShippedUrl: oneClick.markShippedUrl,
     supplierLinkUrl: url,
