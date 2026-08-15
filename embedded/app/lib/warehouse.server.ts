@@ -3,6 +3,12 @@
  * Inventory mutations: mark_transfer_in_transit / receive_transfer / complete_stocktake RPCs.
  */
 import { createServiceClient } from "./supabase.server";
+import {
+  resolveListWindow,
+  sanitizeSearch,
+  type ListPageOpts,
+  type ListPageResult,
+} from "./list-table";
 
 export type TransferStatus = "draft" | "in_transit" | "received" | "cancelled";
 export type StocktakeStatus = "in_progress" | "completed" | "cancelled";
@@ -70,22 +76,50 @@ async function listWorkspaceLocations(workspaceId: string) {
 
 export { listWorkspaceLocations };
 
-export async function listTransfers(workspaceId: string) {
-  const supabase = createServiceClient();
-  const { data, error } = await supabase
-    .from("inventory_transfers")
-    .select(
-      "id, status, created_at, from_location_id, to_location_id, inventory_transfer_lines(id)",
-    )
-    .eq("workspace_id", workspaceId)
-    .order("created_at", { ascending: false })
-    .limit(50);
-  if (error) throw new Error(error.message);
+export type TransferListItem = {
+  id: string;
+  status: TransferStatus;
+  createdAt: string;
+  fromLocationName: string;
+  toLocationName: string;
+  lineCount: number;
+};
 
+export async function listTransfers(
+  workspaceId: string,
+  opts?: ListPageOpts,
+): Promise<ListPageResult<TransferListItem>> {
+  const supabase = createServiceClient();
+  const window = resolveListWindow(opts);
+  const q = sanitizeSearch(opts?.q);
   const locs = await listWorkspaceLocations(workspaceId);
   const nameById = new Map(locs.map((l) => [l.id, l.name]));
 
-  return (data ?? []).map((t) => ({
+  let query = supabase
+    .from("inventory_transfers")
+    .select(
+      "id, status, created_at, from_location_id, to_location_id, inventory_transfer_lines(id)",
+      { count: "exact" },
+    )
+    .eq("workspace_id", workspaceId)
+    .order("created_at", { ascending: false });
+  if (q) {
+    const locIds = locs
+      .filter((l) => l.name.toLowerCase().includes(q.toLowerCase()))
+      .map((l) => l.id);
+    if (locIds.length) {
+      query = query.or(
+        `from_location_id.in.(${locIds.join(",")}),to_location_id.in.(${locIds.join(",")})`,
+      );
+    } else {
+      return { rows: [], total: 0 };
+    }
+  }
+
+  const { data, error, count } = await query.range(window.from, window.to);
+  if (error) throw new Error(error.message);
+
+  const rows = (data ?? []).map((t) => ({
     id: t.id as string,
     status: t.status as TransferStatus,
     createdAt: t.created_at as string,
@@ -93,6 +127,7 @@ export async function listTransfers(workspaceId: string) {
     toLocationName: nameById.get(t.to_location_id as string) ?? "—",
     lineCount: ((t.inventory_transfer_lines ?? []) as unknown[]).length,
   }));
+  return { rows, total: count ?? rows.length };
 }
 
 export async function getTransfer(
@@ -222,18 +257,47 @@ export async function receiveTransfer(workspaceId: string, transferId: string) {
   return data as { transfer_id: string; status: string; movements: unknown[] };
 }
 
-export async function listStocktakes(workspaceId: string) {
+export type StocktakeListItem = {
+  id: string;
+  locationName: string;
+  status: StocktakeStatus;
+  startedAt: string;
+  completedAt: string | null;
+  lineCount: number;
+};
+
+export async function listStocktakes(
+  workspaceId: string,
+  opts?: ListPageOpts,
+): Promise<ListPageResult<StocktakeListItem>> {
   const supabase = createServiceClient();
-  const { data, error } = await supabase
-    .from("stocktakes")
-    .select("id, location_id, status, started_at, completed_at, stocktake_lines(id)")
-    .eq("workspace_id", workspaceId)
-    .order("started_at", { ascending: false })
-    .limit(50);
-  if (error) throw new Error(error.message);
+  const window = resolveListWindow(opts);
+  const q = sanitizeSearch(opts?.q);
   const locs = await listWorkspaceLocations(workspaceId);
   const nameById = new Map(locs.map((l) => [l.id, l.name]));
-  return (data ?? []).map((s) => ({
+
+  let query = supabase
+    .from("stocktakes")
+    .select(
+      "id, location_id, status, started_at, completed_at, stocktake_lines(id)",
+      { count: "exact" },
+    )
+    .eq("workspace_id", workspaceId)
+    .order("started_at", { ascending: false });
+  if (q) {
+    const locIds = locs
+      .filter((l) => l.name.toLowerCase().includes(q.toLowerCase()))
+      .map((l) => l.id);
+    if (locIds.length) {
+      query = query.in("location_id", locIds);
+    } else {
+      return { rows: [], total: 0 };
+    }
+  }
+
+  const { data, error, count } = await query.range(window.from, window.to);
+  if (error) throw new Error(error.message);
+  const rows = (data ?? []).map((s) => ({
     id: s.id as string,
     locationName: nameById.get(s.location_id as string) ?? "—",
     status: s.status as StocktakeStatus,
@@ -241,6 +305,7 @@ export async function listStocktakes(workspaceId: string) {
     completedAt: (s.completed_at as string | null) ?? null,
     lineCount: ((s.stocktake_lines ?? []) as unknown[]).length,
   }));
+  return { rows, total: count ?? rows.length };
 }
 
 export async function getStocktake(

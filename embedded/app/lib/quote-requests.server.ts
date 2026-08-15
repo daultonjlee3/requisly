@@ -6,6 +6,12 @@ import { createServiceClient } from "./supabase.server";
 import { randomToken } from "./format";
 import { createPurchaseOrder } from "./purchase-orders.server";
 import { money } from "./format";
+import {
+  resolveListWindow,
+  sanitizeSearch,
+  type ListPageOpts,
+  type ListPageResult,
+} from "./list-table";
 
 export type QuoteRequestStatus =
   | "draft"
@@ -113,19 +119,25 @@ export function quoteRequestLinkUrl(token: string): string {
 
 export async function listQuoteRequests(
   workspaceId: string,
-): Promise<QuoteRequestListItem[]> {
+  opts?: ListPageOpts,
+): Promise<ListPageResult<QuoteRequestListItem>> {
   const supabase = createServiceClient();
-  const { data, error } = await supabase
+  const window = resolveListWindow(opts);
+  const q = sanitizeSearch(opts?.q);
+  let query = supabase
     .from("quote_requests")
     .select(
       "id, title, status, created_at, needed_by, quote_request_lines(id), quote_request_suppliers(id, status)",
+      { count: "exact" },
     )
     .eq("workspace_id", workspaceId)
-    .order("created_at", { ascending: false })
-    .limit(100);
+    .order("created_at", { ascending: false });
+  if (q) query = query.ilike("title", `%${q}%`);
+
+  const { data, error, count } = await query.range(window.from, window.to);
   if (error) throw new Error(error.message);
 
-  return (data ?? []).map((row) => {
+  const rows = (data ?? []).map((row) => {
     const suppliers = (row.quote_request_suppliers ?? []) as Array<{
       id: string;
       status: string;
@@ -142,6 +154,7 @@ export async function listQuoteRequests(
       neededBy: (row.needed_by as string | null) ?? null,
     };
   });
+  return { rows, total: count ?? rows.length };
 }
 
 export async function createQuoteRequest(opts: {

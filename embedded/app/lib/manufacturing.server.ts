@@ -5,6 +5,12 @@
  * Make-to-order MOs are suggested only — never auto-created.
  */
 import { createServiceClient } from "./supabase.server";
+import {
+  resolveListWindow,
+  sanitizeSearch,
+  type ListPageOpts,
+  type ListPageResult,
+} from "./list-table";
 
 export type RecipeLineInput = {
   ingredientProductVariantId: string;
@@ -95,27 +101,45 @@ export type CompleteMoResult = {
   completed_at: string;
 };
 
-export async function listRecipes(workspaceId: string): Promise<
-  Array<{
-    id: string;
-    productVariantId: string;
-    finishedTitle: string;
-    finishedSku: string | null;
-    lineCount: number;
-    createdAt: string;
-  }>
-> {
+export type RecipeListItem = {
+  id: string;
+  productVariantId: string;
+  finishedTitle: string;
+  finishedSku: string | null;
+  lineCount: number;
+  createdAt: string;
+};
+
+export async function listRecipes(
+  workspaceId: string,
+  opts?: ListPageOpts,
+): Promise<ListPageResult<RecipeListItem>> {
   const supabase = createServiceClient();
-  const { data, error } = await supabase
+  const window = resolveListWindow(opts);
+  const q = sanitizeSearch(opts?.q);
+  let query = supabase
     .from("product_recipes")
     .select(
       "id, product_variant_id, created_at, product_variants(title, sku), product_recipe_lines(id)",
+      { count: "exact" },
     )
     .eq("workspace_id", workspaceId)
     .order("created_at", { ascending: false });
+  if (q) {
+    const { data: named } = await supabase
+      .from("product_variants")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .or(`title.ilike.%${q}%,sku.ilike.%${q}%`);
+    const ids = (named ?? []).map((v) => v.id);
+    if (!ids.length) return { rows: [], total: 0 };
+    query = query.in("product_variant_id", ids);
+  }
+
+  const { data, error, count } = await query.range(window.from, window.to);
   if (error) throw new Error(error.message);
 
-  return (data ?? []).map((r) => {
+  const rows = (data ?? []).map((r) => {
     const pv = r.product_variants as unknown as {
       title: string;
       sku: string | null;
@@ -130,6 +154,7 @@ export async function listRecipes(workspaceId: string): Promise<
       createdAt: r.created_at as string,
     };
   });
+  return { rows, total: count ?? rows.length };
 }
 
 export async function getRecipe(
@@ -344,23 +369,41 @@ async function resolveOrderNames(
 
 export async function listManufacturingOrders(
   workspaceId: string,
-): Promise<ManufacturingOrderRow[]> {
+  opts?: ListPageOpts,
+): Promise<ListPageResult<ManufacturingOrderRow>> {
   const supabase = createServiceClient();
-  const { data, error } = await supabase
+  const window = resolveListWindow(opts);
+  const q = sanitizeSearch(opts?.q);
+  let query = supabase
     .from("manufacturing_orders")
     .select(
       "id, workspace_id, product_variant_id, location_id, qty_to_make, mode, linked_sales_order_id, status, notes, created_at, completed_at, product_variants(title, sku), locations(name)",
+      { count: "exact" },
     )
     .eq("workspace_id", workspaceId)
-    .order("created_at", { ascending: false })
-    .limit(100);
+    .order("created_at", { ascending: false });
+  if (q) {
+    const { data: named } = await supabase
+      .from("product_variants")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .or(`title.ilike.%${q}%,sku.ilike.%${q}%`);
+    const ids = (named ?? []).map((v) => v.id);
+    if (!ids.length) return { rows: [], total: 0 };
+    query = query.in("product_variant_id", ids);
+  }
+
+  const { data, error, count } = await query.range(window.from, window.to);
   if (error) throw new Error(error.message);
 
   const names = await resolveOrderNames(
     workspaceId,
     (data ?? []).map((r) => (r.linked_sales_order_id as string | null) ?? ""),
   );
-  return (data ?? []).map((r) => mapMoRow(r as Record<string, unknown>, names));
+  const rows = (data ?? []).map((r) =>
+    mapMoRow(r as Record<string, unknown>, names),
+  );
+  return { rows, total: count ?? rows.length };
 }
 
 export async function getManufacturingOrder(
@@ -467,8 +510,8 @@ export async function createManufacturingOrder(opts: {
  */
 export async function listMakeToOrderSuggestions(
   workspaceId: string,
-  opts?: { lookbackDays?: number },
-): Promise<MakeToOrderSuggestion[]> {
+  opts?: { lookbackDays?: number } & ListPageOpts,
+): Promise<ListPageResult<MakeToOrderSuggestion>> {
   const supabase = createServiceClient();
   const lookbackDays = opts?.lookbackDays ?? 90;
   const since = new Date();
@@ -492,17 +535,20 @@ export async function listMakeToOrderSuggestions(
         .eq("workspace_id", workspaceId)
         .gte("created_at", since.toISOString())
         .order("processed_at", { ascending: true, nullsFirst: false })
-        .order("created_at", { ascending: true }),
+        .order("created_at", { ascending: true })
+        .limit(200),
     ]);
 
   const recipeVariantIds = new Set(
     (recipes ?? []).map((r) => r.product_variant_id as string),
   );
-  if (!recipeVariantIds.size || !(orders ?? []).length) return [];
+  if (!recipeVariantIds.size || !(orders ?? []).length) {
+    return { rows: [], total: 0 };
+  }
 
   const primaryLoc =
     (locations ?? []).find((l) => l.is_primary) ?? (locations ?? [])[0];
-  if (!primaryLoc) return [];
+  if (!primaryLoc) return { rows: [], total: 0 };
 
   const orderIds = (orders ?? []).map((o) => o.id as string);
   const [{ data: lines }, { data: levels }, { data: openMos }] =
@@ -555,7 +601,7 @@ export async function listMakeToOrderSuggestions(
     ...new Set(
       (lines ?? [])
         .map((l) => l.product_variant_id as string | null)
-        .filter((id): id is string => Boolean(id) && recipeVariantIds.has(id)),
+        .filter((id): id is string => id != null && recipeVariantIds.has(id)),
     ),
   ];
   const { data: variants } = variantIdsNeeded.length
@@ -634,7 +680,19 @@ export async function listMakeToOrderSuggestions(
     }
   }
 
-  return suggestions;
+  const q = sanitizeSearch(opts?.q);
+  const filtered = q
+    ? suggestions.filter((s) =>
+        `${s.orderName} ${s.finishedTitle} ${s.finishedSku ?? ""}`
+          .toLowerCase()
+          .includes(q.toLowerCase()),
+      )
+    : suggestions;
+  const window = resolveListWindow(opts);
+  return {
+    rows: filtered.slice(window.from, window.to + 1),
+    total: filtered.length,
+  };
 }
 
 /** Merchant-accepted suggestion → draft make-to-order MO. Never called automatically. */

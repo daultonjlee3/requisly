@@ -13,7 +13,7 @@ import {
   Text,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { PoCalendar } from "../components/PoCalendar";
 import { PoKanbanBoard } from "../components/PoKanbanBoard";
 import {
@@ -21,8 +21,15 @@ import {
   resolvePoView,
 } from "../components/PoViewToggle";
 import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
-import { downloadCsv, stampFilename, toCsv } from "../lib/csv";
 import { getMerchantContext } from "../lib/merchant.server";
+import {
+  indexTablePagination,
+  LIST_VIEW_CAP,
+  parseListPage,
+  parseListQuery,
+  patchListParams,
+} from "../lib/list-table";
+import { useFilteredCsvExport } from "../lib/use-filtered-csv-export";
 import { listPurchaseOrders } from "../lib/purchase-orders.server";
 import { listSuppliers } from "../lib/suppliers.server";
 import { TIMELINE_STEPS } from "../lib/po-status";
@@ -34,18 +41,36 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const month = url.searchParams.get("month");
   const status = url.searchParams.get("status");
   const supplierId = url.searchParams.get("supplier");
-  const [purchaseOrders, suppliers] = await Promise.all([
-    listPurchaseOrders(merchant.workspace.id, { status, supplierId }),
+  const q = parseListQuery(url.searchParams.get("q"));
+  const page = parseListPage(url.searchParams.get("page"));
+  const forExport = url.searchParams.get("export") === "1";
+  const [poPage, suppliers] = await Promise.all([
+    listPurchaseOrders(merchant.workspace.id, {
+      status,
+      supplierId,
+      q,
+      ...(forExport
+        ? { forExport: true }
+        : view === "list"
+          ? { page }
+          : { cap: LIST_VIEW_CAP }),
+    }),
     listSuppliers(merchant.workspace.id),
   ]);
   return {
     workspaceName: merchant.workspace.name,
-    purchaseOrders,
+    purchaseOrders: poPage.rows,
+    total: poPage.total,
     suppliers: suppliers.map((s) => ({ id: s.id, name: s.name })),
     view,
     month,
     status,
     supplierId,
+    q,
+    page,
+    truncated: view !== "list" && !forExport && poPage.total > poPage.rows.length,
+    exportRows: forExport ? poPage.rows : null,
+    exportToken: forExport ? Date.now() : null,
   };
 };
 
@@ -53,39 +78,50 @@ export default function PurchaseOrdersList() {
   const {
     workspaceName,
     purchaseOrders,
+    total,
     suppliers,
     view,
     month,
     status,
     supplierId,
+    q,
+    page,
+    truncated,
   } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const [queryValue, setQueryValue] = useState("");
-
-  const count = purchaseOrders.length;
-
-  const filtered = useMemo(() => {
-    const q = queryValue.trim().toLowerCase();
-    if (!q) return purchaseOrders;
-    return purchaseOrders.filter((po) => {
-      const hay =
-        `${po.poNumber} ${po.supplierName} ${po.statusLabel}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [purchaseOrders, queryValue]);
+  const [queryValue, setQueryValue] = useState(q);
 
   const applyParams = useCallback(
     (patch: Record<string, string | null>) => {
-      const next = new URLSearchParams(searchParams);
-      for (const [key, value] of Object.entries(patch)) {
-        if (!value) next.delete(key);
-        else next.set(key, value);
-      }
-      setSearchParams(next);
+      setSearchParams(patchListParams(searchParams, patch));
     },
     [searchParams, setSearchParams],
   );
+
+  const { exportCsv, exporting } = useFilteredCsvExport({
+    path: "/app/purchase-orders",
+    searchParams,
+    prefix: "purchase-orders",
+    headers: [
+      "po_number",
+      "supplier",
+      "status",
+      "total",
+      "ship_date",
+      "estimated_arrival",
+      "updated",
+    ],
+    mapRow: (po: (typeof purchaseOrders)[number]) => [
+      po.poNumber,
+      po.supplierName,
+      po.status,
+      po.totalRaw,
+      po.requestedShipDateRaw ?? "",
+      po.estimatedArrivalRaw ?? "",
+      po.updated,
+    ],
+  });
 
   const filters = [
     {
@@ -146,7 +182,7 @@ export default function PurchaseOrdersList() {
       : []),
   ];
 
-  const calendarPos = filtered
+  const calendarPos = purchaseOrders
     .map((po) => {
       const plotDate = po.estimatedArrivalRaw || po.requestedShipDateRaw;
       if (!plotDate) return null;
@@ -166,34 +202,10 @@ export default function PurchaseOrdersList() {
     })
     .filter((p): p is NonNullable<typeof p> => p != null);
 
-  const exportCsv = useCallback(() => {
-    const csv = toCsv(
-      [
-        "po_number",
-        "supplier",
-        "status",
-        "total",
-        "ship_date",
-        "estimated_arrival",
-        "updated",
-      ],
-      filtered.map((po) => [
-        po.poNumber,
-        po.supplierName,
-        po.status,
-        po.totalRaw,
-        po.requestedShipDateRaw ?? "",
-        po.estimatedArrivalRaw ?? "",
-        po.updated,
-      ]),
-    );
-    downloadCsv(stampFilename("purchase-orders"), csv);
-  }, [filtered]);
-
   return (
     <Page
       title="Purchase orders"
-      subtitle={`${workspaceName} · ${count} order${count === 1 ? "" : "s"}`}
+      subtitle={`${workspaceName} · ${total} order${total === 1 ? "" : "s"}`}
       primaryAction={{
         content: "New PO",
         url: "/app/purchase-orders/new",
@@ -202,7 +214,7 @@ export default function PurchaseOrdersList() {
         {
           content: "Export",
           onAction: exportCsv,
-          disabled: filtered.length === 0,
+          disabled: total === 0 || exporting,
         },
         {
           content: "Calendar page",
@@ -220,18 +232,30 @@ export default function PurchaseOrdersList() {
         <Card padding="0">
           <Filters
             queryValue={queryValue}
+            queryPlaceholder="Search PO number or supplier"
             filters={filters}
             appliedFilters={appliedFilters}
             onQueryChange={setQueryValue}
-            onQueryClear={() => setQueryValue("")}
+            onQueryClear={() => {
+              setQueryValue("");
+              applyParams({ q: null });
+            }}
             onClearAll={() => {
               setQueryValue("");
-              applyParams({ status: null, supplier: null });
+              applyParams({ q: null, status: null, supplier: null });
             }}
+            onQueryBlur={() => applyParams({ q: queryValue || null })}
           />
         </Card>
 
-        {filtered.length === 0 ? (
+        {truncated ? (
+          <Text as="p" tone="subdued" variant="bodySm">
+            Showing the {LIST_VIEW_CAP} most recent matching POs in this view.
+            Use the list view to page through all {total}.
+          </Text>
+        ) : null}
+
+        {purchaseOrders.length === 0 ? (
           <Card>
             <EmptyState
               heading="No purchase orders match"
@@ -245,7 +269,7 @@ export default function PurchaseOrdersList() {
             </EmptyState>
           </Card>
         ) : view === "kanban" ? (
-          <PoKanbanBoard purchaseOrders={filtered} />
+          <PoKanbanBoard purchaseOrders={purchaseOrders} />
         ) : view === "calendar" ? (
           <PoCalendar purchaseOrders={calendarPos} monthParam={month} />
         ) : (
@@ -255,7 +279,12 @@ export default function PurchaseOrdersList() {
                 singular: "purchase order",
                 plural: "purchase orders",
               }}
-              itemCount={filtered.length}
+              itemCount={purchaseOrders.length}
+              pagination={indexTablePagination({
+                page,
+                total,
+                onPageChange: (next) => applyParams({ page: String(next) }),
+              })}
               headings={[
                 { title: "PO #" },
                 { title: "Supplier" },
@@ -266,7 +295,7 @@ export default function PurchaseOrdersList() {
               ]}
               selectable={false}
             >
-              {filtered.map((po, index) => (
+              {purchaseOrders.map((po, index) => (
                 <IndexTable.Row
                   id={po.id}
                   key={po.id}

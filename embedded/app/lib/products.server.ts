@@ -1,5 +1,6 @@
 import { createServiceClient } from "./supabase.server";
 import { money, shortDate } from "./format";
+import { resolveListWindow, sanitizeSearch } from "./list-table";
 import {
   computeLandedUnitCost,
   currentLandedUnitCostAsOf,
@@ -66,35 +67,69 @@ export type ProductDetail = {
   }>;
 };
 
-export async function listProductsWorkspace(workspaceId: string): Promise<{
+export async function listProductsWorkspace(
+  workspaceId: string,
+  opts?: {
+    q?: string | null;
+    catalogPage?: number;
+    variantPage?: number;
+    forExport?: boolean;
+  },
+): Promise<{
   catalog: CatalogProductRow[];
+  catalogTotal: number;
   variants: VariantRow[];
-  suppliers: Array<{ id: string; name: string }>;
+  variantTotal: number;
   syncedAt: string | null;
 }> {
   const supabase = createServiceClient();
   const asOf = todayDateInputValue();
+  const q = sanitizeSearch(opts?.q);
+  const catalogWindow = resolveListWindow({
+    page: opts?.catalogPage,
+    forExport: opts?.forExport,
+  });
+  const variantWindow = resolveListWindow({
+    page: opts?.variantPage,
+    forExport: opts?.forExport,
+  });
+
+  let catalogQuery = supabase
+    .from("supplier_products")
+    .select(
+      "id, title, sku, case_qty, moq, supplier_id, suppliers(name), supplier_product_prices(id, unit_cost, freight_per_unit, duty_per_unit, customs_per_unit, landed_unit_cost, effective_date, created_at)",
+      { count: "exact" },
+    )
+    .eq("workspace_id", workspaceId)
+    .order("title");
+  let variantQuery = supabase
+    .from("product_variants")
+    .select("id, title, sku, retail_price, image_url", { count: "exact" })
+    .eq("workspace_id", workspaceId)
+    .order("title");
+  if (q) {
+    const { data: named } = await supabase
+      .from("suppliers")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .ilike("name", `%${q}%`);
+    const supplierIds = (named ?? []).map((s) => s.id);
+    catalogQuery = supplierIds.length
+      ? catalogQuery.or(
+          `title.ilike.%${q}%,sku.ilike.%${q}%,supplier_id.in.(${supplierIds.join(",")})`,
+        )
+      : catalogQuery.or(`title.ilike.%${q}%,sku.ilike.%${q}%`);
+    variantQuery = variantQuery.or(`title.ilike.%${q}%,sku.ilike.%${q}%`);
+  }
 
   const [
-    { data: catalog, error: cErr },
-    { data: variants, error: vErr },
+    { data: catalog, error: cErr, count: catalogCount },
+    { data: variants, error: vErr, count: variantCount },
     { data: locations, error: locErr },
-    { data: levels, error: lvlErr },
     { data: workspace, error: wsErr },
-    { data: suppliers, error: supErr },
   ] = await Promise.all([
-    supabase
-      .from("supplier_products")
-      .select(
-        "id, title, sku, case_qty, moq, supplier_id, suppliers(name), supplier_product_prices(id, unit_cost, freight_per_unit, duty_per_unit, customs_per_unit, landed_unit_cost, effective_date, created_at)",
-      )
-      .eq("workspace_id", workspaceId)
-      .order("title"),
-    supabase
-      .from("product_variants")
-      .select("id, title, sku, retail_price, image_url")
-      .eq("workspace_id", workspaceId)
-      .order("title"),
+    catalogQuery.range(catalogWindow.from, catalogWindow.to),
+    variantQuery.range(variantWindow.from, variantWindow.to),
     supabase
       .from("locations")
       .select("id")
@@ -102,28 +137,27 @@ export async function listProductsWorkspace(workspaceId: string): Promise<{
       .eq("is_primary", true)
       .maybeSingle(),
     supabase
-      .from("inventory_levels")
-      .select("product_variant_id, location_id, on_hand")
-      .eq("workspace_id", workspaceId),
-    supabase
       .from("workspaces")
       .select("shopify_synced_at")
       .eq("id", workspaceId)
       .maybeSingle(),
-    supabase
-      .from("suppliers")
-      .select("id, name")
-      .eq("workspace_id", workspaceId)
-      .order("name"),
   ]);
   if (cErr) throw new Error(cErr.message);
   if (vErr) throw new Error(vErr.message);
   if (locErr) throw new Error(locErr.message);
-  if (lvlErr) throw new Error(lvlErr.message);
   if (wsErr) throw new Error(wsErr.message);
-  if (supErr) throw new Error(supErr.message);
 
+  const variantIds = (variants ?? []).map((v) => v.id);
   const primaryId = locations?.id;
+  const { data: levels, error: lvlErr } = variantIds.length
+    ? await supabase
+        .from("inventory_levels")
+        .select("product_variant_id, location_id, on_hand")
+        .eq("workspace_id", workspaceId)
+        .in("product_variant_id", variantIds)
+    : { data: [] as Array<{ product_variant_id: string; location_id: string; on_hand: number }>, error: null };
+  if (lvlErr) throw new Error(lvlErr.message);
+
   const onHandByVariant = new Map<string, number>();
   for (const level of levels ?? []) {
     if (primaryId && level.location_id !== primaryId) continue;
@@ -135,7 +169,8 @@ export async function listProductsWorkspace(workspaceId: string): Promise<{
 
   return {
     syncedAt: workspace?.shopify_synced_at ?? null,
-    suppliers: (suppliers ?? []).map((s) => ({ id: s.id, name: s.name })),
+    catalogTotal: catalogCount ?? (catalog ?? []).length,
+    variantTotal: variantCount ?? (variants ?? []).length,
     catalog: (catalog ?? []).map((row) => {
       const supplier = row.suppliers as unknown as { name: string } | null;
       const prices = (row.supplier_product_prices ?? []) as PriceScheduleRow[];

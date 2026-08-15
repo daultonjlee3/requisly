@@ -9,8 +9,29 @@ import {
   TextField,
 } from "@shopify/polaris";
 import { BarChart, LineChart } from "@shopify/polaris-viz";
+import { useState } from "react";
 import { downloadCsv, stampFilename, toCsv } from "../lib/csv";
 import type { ReportResult } from "../lib/report-builder.server";
+
+const TEXT_COLUMNS = new Set([
+  "supplier",
+  "product",
+  "sku",
+  "status",
+  "po_number",
+  "condition",
+  "description",
+  "ship_date",
+  "arrival",
+  "updated",
+  "created_at",
+  "received_at",
+  "reason_note",
+  "velocity_note",
+  "kind",
+  "cost_source",
+  "reliable",
+]);
 
 export function ReportResultView(props: {
   result: ReportResult;
@@ -18,6 +39,8 @@ export function ReportResultView(props: {
     templateId: string,
     params: Record<string, string | number | boolean>,
   ) => void;
+  onFollowUpPrompt?: (prompt: string) => void;
+  followUpLoading?: boolean;
   onPin: () => void;
   pinning?: boolean;
   onSave?: () => void;
@@ -28,6 +51,8 @@ export function ReportResultView(props: {
   const {
     result,
     onFollowUp,
+    onFollowUpPrompt,
+    followUpLoading,
     onPin,
     pinning,
     onSave,
@@ -35,6 +60,7 @@ export function ReportResultView(props: {
     saveTitle,
     onSaveTitleChange,
   } = props;
+  const [followUp, setFollowUp] = useState("");
 
   const exportCsv = () => {
     downloadCsv(
@@ -121,8 +147,8 @@ export function ReportResultView(props: {
 
         {result.rows.length ? (
           <DataTable
-            columnContentTypes={result.columns.map((_, i) =>
-              i === 0 ? "text" : "numeric",
+            columnContentTypes={result.columns.map((col, i) =>
+              i === 0 || TEXT_COLUMNS.has(col) ? "text" : "numeric",
             )}
             headings={result.columns}
             rows={result.rows.map((row) =>
@@ -137,23 +163,58 @@ export function ReportResultView(props: {
           />
         ) : null}
 
-        {result.followUps.length ? (
-          <BlockStack gap="200">
-            <Text as="h3" variant="headingSm">
-              Follow up
-            </Text>
+        <BlockStack gap="200">
+          <Text as="h3" variant="headingSm">
+            Follow up
+          </Text>
+          {result.followUps.length ? (
             <InlineStack gap="200" wrap>
               {result.followUps.map((fu) => (
                 <Button
                   key={fu.id}
-                  onClick={() => onFollowUp(fu.templateId, fu.params)}
+                  onClick={() =>
+                    onFollowUp(
+                      fu.templateId,
+                      fu.templateId === result.templateId
+                        ? { ...(result.params ?? {}), ...fu.params }
+                        : fu.params,
+                    )
+                  }
                 >
                   {fu.label}
                 </Button>
               ))}
             </InlineStack>
-          </BlockStack>
-        ) : null}
+          ) : null}
+          {onFollowUpPrompt ? (
+            <BlockStack gap="200">
+              <TextField
+                label="Ask a follow-up"
+                labelHidden
+                value={followUp}
+                onChange={setFollowUp}
+                autoComplete="off"
+                multiline={2}
+                placeholder="e.g. Just show PO number, supplier, and total"
+              />
+              <InlineStack align="end">
+                <Button
+                  variant="primary"
+                  onClick={() => {
+                    const next = followUp.trim();
+                    if (!next) return;
+                    onFollowUpPrompt(next);
+                    setFollowUp("");
+                  }}
+                  loading={followUpLoading}
+                  disabled={!followUp.trim()}
+                >
+                  Ask follow-up
+                </Button>
+              </InlineStack>
+            </BlockStack>
+          ) : null}
+        </BlockStack>
 
         {onSave ? (
           <BlockStack gap="200">

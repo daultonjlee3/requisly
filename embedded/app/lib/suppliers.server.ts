@@ -1,5 +1,11 @@
 import { createServiceClient } from "./supabase.server";
 import { money, relativeTime, shortDate } from "./format";
+import {
+  resolveListWindow,
+  sanitizeSearch,
+  type ListPageOpts,
+  type ListPageResult,
+} from "./list-table";
 import { statusBadgeTone, statusLabel, type PoStatus } from "./po-status";
 import { currentLandedUnitCostAsOf, todayDateInputValue } from "./pricing";
 
@@ -102,20 +108,41 @@ async function clearOtherPrimaries(
 export async function listSuppliers(
   workspaceId: string,
 ): Promise<SupplierListItem[]> {
+  const { rows } = await listSuppliersPage(workspaceId, { cap: 500 });
+  return rows;
+}
+
+export async function listSuppliersPage(
+  workspaceId: string,
+  opts?: ListPageOpts,
+): Promise<ListPageResult<SupplierListItem>> {
   const supabase = createServiceClient();
-  const [{ data: suppliers, error }, { data: pos, error: poErr }] =
-    await Promise.all([
-      supabase
-        .from("suppliers")
-        .select("id, name, email, created_at")
-        .eq("workspace_id", workspaceId)
-        .order("name"),
-      supabase
+  const window = resolveListWindow(opts);
+  const q = sanitizeSearch(opts?.q);
+
+  let query = supabase
+    .from("suppliers")
+    .select("id, name, email, created_at", { count: "exact" })
+    .eq("workspace_id", workspaceId)
+    .order("name");
+  if (q) {
+    query = query.or(`name.ilike.%${q}%,email.ilike.%${q}%`);
+  }
+
+  const { data: suppliers, error, count } = await query.range(
+    window.from,
+    window.to,
+  );
+  if (error) throw new Error(error.message);
+
+  const ids = (suppliers ?? []).map((s) => s.id);
+  const { data: pos, error: poErr } = ids.length
+    ? await supabase
         .from("purchase_orders")
         .select("supplier_id, status")
-        .eq("workspace_id", workspaceId),
-    ]);
-  if (error) throw new Error(error.message);
+        .eq("workspace_id", workspaceId)
+        .in("supplier_id", ids)
+    : { data: [] as Array<{ supplier_id: string; status: string }>, error: null };
   if (poErr) throw new Error(poErr.message);
 
   const openBySupplier = new Map<string, number>();
@@ -127,13 +154,14 @@ export async function listSuppliers(
     );
   }
 
-  return (suppliers ?? []).map((s) => ({
+  const rows = (suppliers ?? []).map((s) => ({
     id: s.id,
     name: s.name,
     email: s.email,
     openOrders: openBySupplier.get(s.id) ?? 0,
     createdAt: shortDate(s.created_at),
   }));
+  return { rows, total: count ?? rows.length };
 }
 
 export async function getSupplierDetail(

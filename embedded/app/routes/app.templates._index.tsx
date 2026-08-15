@@ -12,17 +12,24 @@ import {
   Button,
   ButtonGroup,
   Card,
+  ChoiceList,
   EmptyState,
-  InlineGrid,
+  Filters,
+  IndexTable,
   InlineStack,
   Page,
-  Select,
   Text,
-  TextField,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
-import { useState } from "react";
+import { useCallback, useState } from "react";
+import {
+  indexTablePagination,
+  parseListPage,
+  parseListQuery,
+  patchListParams,
+} from "../lib/list-table";
 import { getMerchantContext } from "../lib/merchant.server";
+import { useFilteredCsvExport } from "../lib/use-filtered-csv-export";
 import {
   archivePoTemplate,
   deletePoTemplate,
@@ -36,7 +43,9 @@ import { createServiceClient } from "../lib/supabase.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: false });
   const url = new URL(request.url);
-  const q = url.searchParams.get("q");
+  const q = parseListQuery(url.searchParams.get("q"));
+  const page = parseListPage(url.searchParams.get("page"));
+  const forExport = url.searchParams.get("export") === "1";
   const supplierId = url.searchParams.get("supplier");
   const status = (url.searchParams.get("status") ?? "active") as
     | TemplateStatus
@@ -51,24 +60,30 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     .from("suppliers")
     .select("id, name")
     .eq("workspace_id", merchant.workspace.id)
-    .order("name");
+    .order("name")
+    .limit(500);
 
-  const templates = await listPoTemplates(merchant.workspace.id, {
+  const result = await listPoTemplates(merchant.workspace.id, {
     q,
     supplierId,
     status,
     sort,
+    ...(forExport ? { forExport: true } : { page }),
   });
 
   return {
-    templates,
+    templates: result.rows,
+    total: result.total,
+    page,
     suppliers: suppliers ?? [],
     filters: {
-      q: q ?? "",
+      q,
       supplierId: supplierId ?? "",
       status,
       sort,
     },
+    exportRows: forExport ? result.rows : null,
+    exportToken: forExport ? Date.now() : null,
   };
 };
 
@@ -108,125 +123,147 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function TemplatesIndex() {
-  const { templates, suppliers, filters } = useLoaderData<typeof loader>();
+  const { templates, total, page, suppliers, filters } =
+    useLoaderData<typeof loader>();
   const [searchParams, setSearchParams] = useSearchParams();
   const navigation = useNavigation();
   const busy = navigation.state !== "idle";
-  const [q, setQ] = useState(filters.q);
+  const [queryValue, setQueryValue] = useState(filters.q);
+  const applyParams = useCallback(
+    (patch: Record<string, string | null>) => {
+      setSearchParams(patchListParams(searchParams, patch));
+    },
+    [searchParams, setSearchParams],
+  );
+  const { exportCsv, exporting } = useFilteredCsvExport({
+    path: "/app/templates",
+    searchParams,
+    prefix: "templates",
+    headers: ["name", "supplier", "status", "products", "last_used", "created"],
+    mapRow: (t: (typeof templates)[number]) => [
+      t.name,
+      t.supplierName,
+      t.status,
+      t.productCount,
+      t.lastUsedLabel,
+      t.createdLabel,
+    ],
+  });
 
-  function applyFilters(next: {
-    q: string;
-    supplier: string;
-    status: string;
-    sort: string;
-  }) {
-    const params = new URLSearchParams();
-    if (next.q.trim()) params.set("q", next.q.trim());
-    if (next.supplier) params.set("supplier", next.supplier);
-    if (next.status && next.status !== "active") params.set("status", next.status);
-    if (next.sort && next.sort !== "last_used") params.set("sort", next.sort);
-    setSearchParams(params);
-  }
+  const filterDefs = [
+    {
+      key: "status",
+      label: "Status",
+      filter: (
+        <ChoiceList
+          title="Status"
+          titleHidden
+          choices={[
+            { label: "Active", value: "active" },
+            { label: "Archived", value: "archived" },
+            { label: "All", value: "all" },
+          ]}
+          selected={[filters.status]}
+          onChange={(selected) =>
+            applyParams({ status: selected[0] === "active" ? null : selected[0] ?? null })
+          }
+        />
+      ),
+      shortcut: true,
+    },
+    {
+      key: "supplier",
+      label: "Supplier",
+      filter: (
+        <ChoiceList
+          title="Supplier"
+          titleHidden
+          choices={suppliers.map((s) => ({ label: s.name, value: s.id }))}
+          selected={filters.supplierId ? [filters.supplierId] : []}
+          onChange={(selected) =>
+            applyParams({ supplier: selected[0] ?? null })
+          }
+        />
+      ),
+      shortcut: true,
+    },
+    {
+      key: "sort",
+      label: "Sort",
+      filter: (
+        <ChoiceList
+          title="Sort"
+          titleHidden
+          choices={[
+            { label: "Last used", value: "last_used" },
+            { label: "Name", value: "name" },
+            { label: "Recently created", value: "created" },
+          ]}
+          selected={[filters.sort]}
+          onChange={(selected) =>
+            applyParams({
+              sort: selected[0] === "last_used" ? null : selected[0] ?? null,
+            })
+          }
+        />
+      ),
+    },
+  ];
+
+  const appliedFilters = [
+    ...(filters.status !== "active"
+      ? [
+          {
+            key: "status",
+            label: `Status: ${filters.status}`,
+            onRemove: () => applyParams({ status: null }),
+          },
+        ]
+      : []),
+    ...(filters.supplierId
+      ? [
+          {
+            key: "supplier",
+            label: `Supplier: ${suppliers.find((s) => s.id === filters.supplierId)?.name ?? "Selected"}`,
+            onRemove: () => applyParams({ supplier: null }),
+          },
+        ]
+      : []),
+  ];
 
   return (
     <Page
       title="PO templates"
-      subtitle="Reusable purchasing blueprints — draft faster, send sooner"
+      subtitle={`${total} template${total === 1 ? "" : "s"}`}
       primaryAction={{ content: "New template", url: "/app/templates/new" }}
       secondaryActions={[
+        {
+          content: "Export",
+          onAction: exportCsv,
+          disabled: total === 0 || exporting,
+        },
         { content: "New PO", url: "/app/purchase-orders/new" },
       ]}
     >
       <TitleBar title="Templates" />
       <BlockStack gap="400">
-        <Card>
-          <BlockStack gap="300">
-            <InlineGrid columns={{ xs: 1, md: 4 }} gap="300">
-              <TextField
-                label="Search"
-                labelHidden
-                value={q}
-                onChange={setQ}
-                onBlur={() =>
-                  applyFilters({
-                    q,
-                    supplier: filters.supplierId,
-                    status: filters.status,
-                    sort: filters.sort,
-                  })
-                }
-                autoComplete="off"
-                placeholder="Search name, supplier, or product"
-              />
-              <Select
-                label="Supplier"
-                labelHidden
-                options={[
-                  { label: "All suppliers", value: "" },
-                  ...suppliers.map((s) => ({ label: s.name, value: s.id })),
-                ]}
-                value={filters.supplierId}
-                onChange={(value) =>
-                  applyFilters({
-                    q: filters.q,
-                    supplier: value,
-                    status: filters.status,
-                    sort: filters.sort,
-                  })
-                }
-              />
-              <Select
-                label="Status"
-                labelHidden
-                options={[
-                  { label: "Active", value: "active" },
-                  { label: "Archived", value: "archived" },
-                  { label: "All", value: "all" },
-                ]}
-                value={filters.status}
-                onChange={(value) =>
-                  applyFilters({
-                    q: filters.q,
-                    supplier: filters.supplierId,
-                    status: value,
-                    sort: filters.sort,
-                  })
-                }
-              />
-              <Select
-                label="Sort"
-                labelHidden
-                options={[
-                  { label: "Last used", value: "last_used" },
-                  { label: "Name", value: "name" },
-                  { label: "Recently created", value: "created" },
-                ]}
-                value={filters.sort}
-                onChange={(value) =>
-                  applyFilters({
-                    q: filters.q,
-                    supplier: filters.supplierId,
-                    status: filters.status,
-                    sort: value,
-                  })
-                }
-              />
-            </InlineGrid>
-            <InlineStack align="end">
-              <Button
-                onClick={() =>
-                  applyFilters({
-                    q,
-                    supplier: filters.supplierId,
-                    status: filters.status,
-                    sort: filters.sort,
-                  })
-                }
-              >
-                Search
-              </Button>
-            </InlineStack>
-          </BlockStack>
+        <Card padding="0">
+          <Filters
+            queryValue={queryValue}
+            queryPlaceholder="Search name or supplier"
+            filters={filterDefs}
+            appliedFilters={appliedFilters}
+            onQueryChange={setQueryValue}
+            onQueryClear={() => {
+              setQueryValue("");
+              applyParams({ q: null });
+            }}
+            onQueryBlur={() => applyParams({ q: queryValue || null })}
+            onClearAll={() => {
+              setQueryValue("");
+              applyParams({ q: null, supplier: null, status: null, sort: null });
+            }}
+          />
         </Card>
 
         {templates.length === 0 ? (
@@ -247,120 +284,120 @@ export default function TemplatesIndex() {
             </EmptyState>
           </Card>
         ) : (
-          <InlineGrid columns={{ xs: 1, sm: 2, lg: 3 }} gap="400">
-            {templates.map((template) => (
-              <Card key={template.id}>
-                <BlockStack gap="300">
-                  <BlockStack gap="100">
-                    <InlineStack align="space-between" blockAlign="start" wrap>
-                      <Text as="h2" variant="headingMd">
-                        {template.name}
-                      </Text>
-                      {template.status === "archived" ? (
-                        <Badge>Archived</Badge>
-                      ) : (
-                        <Badge tone="success">Active</Badge>
-                      )}
-                    </InlineStack>
-                    <Text as="p" tone="subdued">
-                      {template.supplierName}
+          <Card padding="0">
+            <IndexTable
+              resourceName={{ singular: "template", plural: "templates" }}
+              itemCount={templates.length}
+              headings={[
+                { title: "Name" },
+                { title: "Supplier" },
+                { title: "Products" },
+                { title: "Last used" },
+                { title: "Status" },
+                { title: "Actions" },
+              ]}
+              selectable={false}
+              pagination={indexTablePagination({
+                page,
+                total,
+                onPageChange: (next) => applyParams({ page: String(next) }),
+              })}
+            >
+              {templates.map((template, index) => (
+                <IndexTable.Row
+                  id={template.id}
+                  key={template.id}
+                  position={index}
+                >
+                  <IndexTable.Cell>
+                    <Text as="span" fontWeight="semibold">
+                      {template.name}
                     </Text>
-                    {template.description ? (
-                      <Text as="p" variant="bodySm">
-                        {template.description}
-                      </Text>
-                    ) : null}
-                  </BlockStack>
-
-                  <BlockStack gap="050">
-                    <Text as="p" variant="bodySm">
-                      {template.productCount} product
-                      {template.productCount === 1 ? "" : "s"}
-                    </Text>
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Last used · {template.lastUsedLabel}
-                    </Text>
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      Created by {template.createdBy} · {template.createdLabel}
-                    </Text>
-                    {template.useCount > 0 ? (
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        Used {template.useCount} time
-                        {template.useCount === 1 ? "" : "s"}
-                      </Text>
-                    ) : null}
-                  </BlockStack>
-
-                  <ButtonGroup>
-                    {template.status === "active" ? (
-                      <Button
-                        variant="primary"
-                        url={`/app/purchase-orders/new?template=${template.id}`}
-                      >
-                        Use template
-                      </Button>
-                    ) : null}
-                    <Button url={`/app/templates/${template.id}`}>Edit</Button>
-                  </ButtonGroup>
-
-                  <InlineStack gap="200" wrap>
-                    <Form method="post">
-                      <input type="hidden" name="intent" value="duplicate" />
-                      <input
-                        type="hidden"
-                        name="template_id"
-                        value={template.id}
-                      />
-                      <Button submit size="slim" disabled={busy}>
-                        Duplicate
-                      </Button>
-                    </Form>
-                    {template.status === "active" ? (
-                      <Form method="post">
-                        <input type="hidden" name="intent" value="archive" />
-                        <input
-                          type="hidden"
-                          name="template_id"
-                          value={template.id}
-                        />
-                        <Button submit size="slim" disabled={busy}>
-                          Archive
-                        </Button>
-                      </Form>
+                  </IndexTable.Cell>
+                  <IndexTable.Cell>{template.supplierName}</IndexTable.Cell>
+                  <IndexTable.Cell>{template.productCount}</IndexTable.Cell>
+                  <IndexTable.Cell>{template.lastUsedLabel}</IndexTable.Cell>
+                  <IndexTable.Cell>
+                    {template.status === "archived" ? (
+                      <Badge>Archived</Badge>
                     ) : (
+                      <Badge tone="success">Active</Badge>
+                    )}
+                  </IndexTable.Cell>
+                  <IndexTable.Cell>
+                    <InlineStack gap="200" wrap>
+                      <ButtonGroup>
+                        {template.status === "active" ? (
+                          <Button
+                            size="slim"
+                            variant="primary"
+                            url={`/app/purchase-orders/new?template=${template.id}`}
+                          >
+                            Use
+                          </Button>
+                        ) : null}
+                        <Button size="slim" url={`/app/templates/${template.id}`}>
+                          Edit
+                        </Button>
+                      </ButtonGroup>
                       <Form method="post">
-                        <input type="hidden" name="intent" value="restore" />
+                        <input type="hidden" name="intent" value="duplicate" />
                         <input
                           type="hidden"
                           name="template_id"
                           value={template.id}
                         />
                         <Button submit size="slim" disabled={busy}>
-                          Restore
+                          Duplicate
                         </Button>
                       </Form>
-                    )}
-                    <Form method="post">
-                      <input type="hidden" name="intent" value="delete" />
-                      <input
-                        type="hidden"
-                        name="template_id"
-                        value={template.id}
-                      />
-                      <Button
-                        submit
-                        size="slim"
-                        tone="critical"
-                        disabled={busy}
-                      >
-                        Delete
-                      </Button>
-                    </Form>
-                  </InlineStack>
-                </BlockStack>
-              </Card>
-            ))}
-          </InlineGrid>
+                      {template.status === "active" ? (
+                        <Form method="post">
+                          <input type="hidden" name="intent" value="archive" />
+                          <input
+                            type="hidden"
+                            name="template_id"
+                            value={template.id}
+                          />
+                          <Button submit size="slim" disabled={busy}>
+                            Archive
+                          </Button>
+                        </Form>
+                      ) : (
+                        <Form method="post">
+                          <input type="hidden" name="intent" value="restore" />
+                          <input
+                            type="hidden"
+                            name="template_id"
+                            value={template.id}
+                          />
+                          <Button submit size="slim" disabled={busy}>
+                            Restore
+                          </Button>
+                        </Form>
+                      )}
+                      <Form method="post">
+                        <input type="hidden" name="intent" value="delete" />
+                        <input
+                          type="hidden"
+                          name="template_id"
+                          value={template.id}
+                        />
+                        <Button
+                          submit
+                          size="slim"
+                          tone="critical"
+                          disabled={busy}
+                        >
+                          Delete
+                        </Button>
+                      </Form>
+                    </InlineStack>
+                  </IndexTable.Cell>
+                </IndexTable.Row>
+              ))}
+            </IndexTable>
+          </Card>
         )}
 
         {busy && navigation.formData ? (

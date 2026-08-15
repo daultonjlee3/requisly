@@ -43,3 +43,12 @@ export function stampFilename(prefix: string): string {
   const day = String(d.getDate()).padStart(2, "0");
   return `${prefix}-${y}${m}${day}.csv`;
 }
+
+/** Shared list/table export — same helpers as POs / Suppliers / Analytics. */
+export function downloadListCsv(
+  prefix: string,
+  headers: string[],
+  rows: Array<Array<string | number | null | undefined>>,
+): void {
+  downloadCsv(stampFilename(prefix), toCsv(headers, rows));
+}

@@ -1,4 +1,5 @@
 import { createServiceClient } from "./supabase.server";
+import { sanitizeSearch } from "./list-table";
 import type { PoStatus } from "./po-status";
 import type {
   CorrectReceiptFormData,
@@ -722,4 +723,104 @@ async function applyInventoryDeltas(opts: {
       }
     }
   }
+}
+
+export type ReceiptListItem = {
+  receiptId: string;
+  receivedAt: string;
+  poNumber: string;
+  supplier: string;
+  sku: string;
+  description: string;
+  qtyReceived: number;
+  condition: ReceiptCondition;
+  reasonNote: string | null;
+};
+
+/**
+ * Flattened receipt lines for Report Builder listings.
+ * Reuses the same receipts + line-item + PO/supplier joins as correction load.
+ */
+export async function listReceiptLinesForReport(
+  workspaceId: string,
+  filters?: {
+    condition?: ReceiptCondition | null;
+    supplierQ?: string | null;
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    cap?: number;
+  },
+): Promise<{ rows: ReceiptListItem[]; total: number }> {
+  const supabase = createServiceClient();
+  const cap = Math.min(5000, Math.max(1, filters?.cap ?? 500));
+  const supplierQ = sanitizeSearch(filters?.supplierQ);
+
+  let query = supabase
+    .from("receipts")
+    .select(
+      "id, created_at, po_id, purchase_orders(po_number, supplier_id, suppliers(name)), receipt_line_items(id, qty_received, condition, reason_note, po_line_items(description, sku))",
+      { count: "exact" },
+    )
+    .eq("workspace_id", workspaceId)
+    .order("created_at", { ascending: false });
+
+  if (filters?.dateFrom) {
+    query = query.gte("created_at", `${filters.dateFrom}T00:00:00.000Z`);
+  }
+  if (filters?.dateTo) {
+    const end = new Date(`${filters.dateTo}T00:00:00.000Z`);
+    end.setUTCDate(end.getUTCDate() + 1);
+    query = query.lt("created_at", end.toISOString());
+  }
+  if (supplierQ) {
+    const { data: named, error: nameErr } = await supabase
+      .from("suppliers")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .ilike("name", `%${supplierQ}%`);
+    if (nameErr) throw new Error(nameErr.message);
+    const supplierIds = (named ?? []).map((s) => s.id);
+    if (!supplierIds.length) return { rows: [], total: 0 };
+    const { data: pos, error: poErr } = await supabase
+      .from("purchase_orders")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .in("supplier_id", supplierIds);
+    if (poErr) throw new Error(poErr.message);
+    const poIds = (pos ?? []).map((p) => p.id);
+    if (!poIds.length) return { rows: [], total: 0 };
+    query = query.in("po_id", poIds);
+  }
+
+  const { data, error, count } = await query.range(0, cap - 1);
+  if (error) throw new Error(error.message);
+
+  const rows: ReceiptListItem[] = [];
+  for (const receipt of data ?? []) {
+    const po = receipt.purchase_orders as unknown as {
+      po_number: string;
+      suppliers: { name: string } | null;
+    } | null;
+    const lines = (receipt.receipt_line_items ?? []) as Array<{
+      qty_received: number;
+      condition: ReceiptCondition;
+      reason_note: string | null;
+      po_line_items: { description?: string; sku?: string | null } | null;
+    }>;
+    for (const line of lines) {
+      if (filters?.condition && line.condition !== filters.condition) continue;
+      rows.push({
+        receiptId: receipt.id as string,
+        receivedAt: (receipt.created_at as string) ?? "",
+        poNumber: po?.po_number ?? "PO",
+        supplier: po?.suppliers?.name ?? "Supplier",
+        sku: line.po_line_items?.sku ?? "",
+        description: line.po_line_items?.description ?? "Line item",
+        qtyReceived: Number(line.qty_received) || 0,
+        condition: line.condition,
+        reasonNote: line.reason_note,
+      });
+    }
+  }
+  return { rows, total: count ?? rows.length };
 }

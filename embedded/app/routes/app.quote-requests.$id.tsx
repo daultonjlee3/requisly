@@ -14,6 +14,7 @@ import {
   Button,
   Card,
   DataTable,
+  Filters,
   InlineStack,
   Page,
   Select,
@@ -21,7 +22,9 @@ import {
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useMemo, useState } from "react";
+import { downloadListCsv } from "../lib/csv";
 import { money } from "../lib/format";
+import { indexTablePagination, LIST_PAGE_SIZE } from "../lib/list-table";
 import { getMerchantContext } from "../lib/merchant.server";
 import {
   awardQuoteRequest,
@@ -125,6 +128,21 @@ export default function QuoteRequestDetailPage() {
   }, [detail.comparison]);
 
   const [awards, setAwards] = useState<Record<string, string>>(defaultAwards);
+  const [lineQuery, setLineQuery] = useState("");
+  const [linePage, setLinePage] = useState(1);
+
+  const filteredComparison = useMemo(() => {
+    const q = lineQuery.trim().toLowerCase();
+    if (!q) return detail.comparison;
+    return detail.comparison.filter((line) =>
+      `${line.description} ${line.sku ?? ""}`.toLowerCase().includes(q),
+    );
+  }, [detail.comparison, lineQuery]);
+
+  const pagedComparison = filteredComparison.slice(
+    (linePage - 1) * LIST_PAGE_SIZE,
+    linePage * LIST_PAGE_SIZE,
+  );
 
   const canAward =
     detail.status !== "awarded" &&
@@ -147,7 +165,7 @@ export default function QuoteRequestDetailPage() {
     "Award to",
   ];
 
-  const comparisonRows = detail.comparison.map((line) => {
+  const comparisonRows = pagedComparison.map((line) => {
     const cells = detail.suppliers.map((s) => {
       const cell = line.cells.find((c) => c.quoteRequestSupplierId === s.id);
       if (!cell?.hasResponse) {
@@ -230,6 +248,38 @@ export default function QuoteRequestDetailPage() {
     <Page
       title={detail.title}
       backAction={{ content: "Quote requests", url: "/app/quote-requests" }}
+      secondaryActions={[
+        {
+          content: "Export comparison",
+          onAction: () => {
+            downloadListCsv(
+              "quote-comparison",
+              [
+                "line",
+                "sku",
+                "qty",
+                ...detail.suppliers.map((s) => s.supplierName),
+                "awarded_to",
+              ],
+              filteredComparison.map((line) => [
+                line.description,
+                line.sku ?? "",
+                line.qty,
+                ...detail.suppliers.map((s) => {
+                  const cell = line.cells.find(
+                    (c) => c.quoteRequestSupplierId === s.id,
+                  );
+                  return cell?.unitCost ?? "";
+                }),
+                detail.suppliers.find(
+                  (s) => s.id === line.awardedQuoteRequestSupplierId,
+                )?.supplierName ?? "",
+              ]),
+            );
+          },
+          disabled: filteredComparison.length === 0,
+        },
+      ]}
     >
       <TitleBar title={detail.title} />
       <BlockStack gap="400">
@@ -318,16 +368,40 @@ export default function QuoteRequestDetailPage() {
                 No responses yet. Send the request, then compare here.
               </Text>
             ) : (
-              <DataTable
-                columnContentTypes={[
-                  "text",
-                  "numeric",
-                  ...detail.suppliers.map(() => "text" as const),
-                  "text",
-                ]}
-                headings={comparisonHeadings}
-                rows={comparisonRows}
-              />
+              <BlockStack gap="200">
+                <Filters
+                  queryValue={lineQuery}
+                  queryPlaceholder="Search lines by description or SKU"
+                  filters={[]}
+                  onQueryChange={(value) => {
+                    setLineQuery(value);
+                    setLinePage(1);
+                  }}
+                  onQueryClear={() => {
+                    setLineQuery("");
+                    setLinePage(1);
+                  }}
+                  onClearAll={() => {
+                    setLineQuery("");
+                    setLinePage(1);
+                  }}
+                />
+                <DataTable
+                  columnContentTypes={[
+                    "text",
+                    "numeric",
+                    ...detail.suppliers.map(() => "text" as const),
+                    "text",
+                  ]}
+                  headings={comparisonHeadings}
+                  rows={comparisonRows}
+                  pagination={indexTablePagination({
+                    page: linePage,
+                    total: filteredComparison.length,
+                    onPageChange: setLinePage,
+                  })}
+                />
+              </BlockStack>
             )}
           </BlockStack>
         </Card>

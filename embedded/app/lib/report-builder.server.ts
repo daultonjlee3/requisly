@@ -5,9 +5,22 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { narrateInsight } from "./ai-narration.server";
 import { computeCogsReport } from "./cogs.server";
+import { LIST_VIEW_CAP } from "./list-table";
+import { listPurchaseOrders } from "./purchase-orders.server";
+import { listReceiptLinesForReport } from "./receiving.server";
+import {
+  REPORT_TEMPLATE_DEFS,
+  dayAfterIso,
+  projectReportColumns,
+  refineRecords,
+  resolveDateBounds,
+  sanitizeReportParams,
+  type ReportParams,
+} from "./report-params";
 import { createServiceClient } from "./supabase.server";
 import { startTimer } from "./timing.server";
 import { todayDateInputValue } from "./pricing";
+import type { ReceiptCondition } from "./po-types";
 
 export type ReportChartType = "bar" | "line" | "grouped_bar";
 
@@ -67,74 +80,16 @@ export type SavedReportRow = {
   updated_at: string;
 };
 
-export const REPORT_TEMPLATES: ReportTemplateMeta[] = [
-  {
-    id: "margin_by_supplier",
-    question: "Which suppliers are actually costing me margin?",
-    blurb: "Catalog retail vs unit cost, rolled up by supplier.",
-    starter: true,
-    chartHint: "bar",
-    needsOrders: false,
-  },
-  {
-    id: "spend_vs_revenue_by_supplier",
-    question: "Compare spend vs. revenue by supplier.",
-    blurb: "Closed PO spend next to Shopify order revenue on linked SKUs.",
-    starter: true,
-    chartHint: "grouped_bar",
-    needsOrders: true,
-  },
-  {
-    id: "profit_vs_reliability",
-    question: "Is my most profitable product also my most reliably-shipped one?",
-    blurb: "Product margin crossed with supplier on-time rate.",
-    starter: true,
-    chartHint: "bar",
-    needsOrders: false,
-  },
-  {
-    id: "spend_by_supplier",
-    question: "Where is my closed PO spend going?",
-    blurb: "Closed purchase-order totals by supplier.",
-    starter: true,
-    chartHint: "bar",
-    needsOrders: false,
-  },
-  {
-    id: "late_suppliers",
-    question: "Which suppliers miss ship dates most?",
-    blurb: "On-time % from scorecards with enough closed history.",
-    starter: true,
-    chartHint: "bar",
-    needsOrders: false,
-  },
-  {
-    id: "top_sku_margin",
-    question: "Which SKUs have the thinnest margins right now?",
-    blurb: "Per-SKU retail minus current vendor cost.",
-    starter: true,
-    chartHint: "bar",
-    needsOrders: false,
-  },
-  {
-    id: "dead_stock",
-    question: "What's not selling?",
-    blurb:
-      "On-hand inventory with little or no recent order velocity (dead / excess stock).",
-    starter: true,
-    chartHint: "bar",
-    needsOrders: true,
-  },
-  {
-    id: "cogs_by_product",
-    question: "What's my real COGS by product/supplier/period?",
-    blurb:
-      "Requisly COGS from real purchase price history — Weighted Average or FIFO (Settings).",
-    starter: true,
-    chartHint: "bar",
-    needsOrders: true,
-  },
-];
+export const REPORT_TEMPLATES: ReportTemplateMeta[] = REPORT_TEMPLATE_DEFS.map(
+  (t) => ({
+    id: t.id,
+    question: t.question,
+    blurb: t.blurb,
+    starter: t.starter,
+    chartHint: t.chartHint,
+    needsOrders: t.needsOrders,
+  }),
+);
 
 function money(n: number) {
   return Math.round(n * 100) / 100;
@@ -173,23 +128,16 @@ async function currentCostMap(
   return map;
 }
 
-function applyFollowUpFilter(
-  rows: Array<Record<string, number | string | null>>,
-  params: Record<string, string | number | boolean>,
-): Array<Record<string, number | string | null>> {
-  let out = rows;
-  if (params.min_margin_pct != null) {
-    const min = Number(params.min_margin_pct);
-    out = out.filter((r) => Number(r.margin_pct) >= min);
-  }
-  if (params.max_margin_pct != null) {
-    const max = Number(params.max_margin_pct);
-    out = out.filter((r) => Number(r.margin_pct) <= max);
-  }
-  if (params.limit != null) {
-    out = out.slice(0, Number(params.limit));
-  }
-  return out;
+function poInDateBounds(
+  createdAt: string | null | undefined,
+  params: ReportParams,
+): boolean {
+  const bounds = resolveDateBounds(params);
+  if (!bounds.from && !bounds.to) return true;
+  if (!createdAt) return false;
+  if (bounds.from && createdAt < `${bounds.from}T00:00:00.000Z`) return false;
+  if (bounds.to && createdAt >= dayAfterIso(bounds.to)) return false;
+  return true;
 }
 
 async function computeMarginBySupplier(
@@ -258,7 +206,7 @@ async function computeMarginBySupplier(
   records.sort(
     (a, b) => (a.margin_pct ?? 999) - (b.margin_pct ?? 999),
   );
-  records = applyFollowUpFilter(records, params) as typeof records;
+  records = refineRecords("margin_by_supplier", records, params);
 
   const columns = [
     "supplier",
@@ -313,13 +261,13 @@ async function computeMarginBySupplier(
         id: "below_30",
         label: "Show me just the ones below 30%",
         templateId: "margin_by_supplier",
-        params: { max_margin_pct: 30 },
+        params: { ...params, max_margin_pct: 30 },
       },
       {
         id: "top_5_thin",
         label: "Top 5 thinnest margins",
         templateId: "margin_by_supplier",
-        params: { limit: 5 },
+        params: { ...params, limit: 5 },
       },
     ] satisfies ReportFollowUp[],
     emptyReason: records.length
@@ -335,13 +283,14 @@ async function computeSpendVsRevenue(
 ) {
   const { data: closed, error: cErr } = await supabase
     .from("purchase_orders")
-    .select("supplier_id, total, suppliers(name)")
+    .select("supplier_id, total, created_at, suppliers(name)")
     .eq("workspace_id", workspaceId)
     .eq("status", "closed");
   if (cErr) throw new Error(cErr.message);
 
   const spend = new Map<string, { name: string; spend: number; poCount: number }>();
   for (const po of closed ?? []) {
+    if (!poInDateBounds(po.created_at as string | null, params)) continue;
     const sid = po.supplier_id as string;
     const name = (po.suppliers as { name: string } | null)?.name ?? "Supplier";
     const entry = spend.get(sid) ?? { name, spend: 0, poCount: 0 };
@@ -351,11 +300,32 @@ async function computeSpendVsRevenue(
   }
 
   // Revenue: order lines → product_variant → preferred supplier_product
-  const { data: lines, error: lErr } = await supabase
+  const bounds = resolveDateBounds(params);
+  let orderIds: string[] | null = null;
+  if (bounds.from || bounds.to) {
+    let oq = supabase
+      .from("shopify_orders")
+      .select("id")
+      .eq("workspace_id", workspaceId);
+    if (bounds.from) oq = oq.gte("processed_at", `${bounds.from}T00:00:00.000Z`);
+    if (bounds.to) oq = oq.lt("processed_at", dayAfterIso(bounds.to));
+    const { data: orders, error: oErr } = await oq;
+    if (oErr) throw new Error(oErr.message);
+    orderIds = (orders ?? []).map((o) => o.id as string);
+  }
+
+  let lineQuery = supabase
     .from("shopify_order_line_items")
-    .select("product_variant_id, quantity, unit_price")
+    .select("product_variant_id, quantity, unit_price, order_id")
     .eq("workspace_id", workspaceId)
     .not("product_variant_id", "is", null);
+  if (orderIds) {
+    lineQuery = lineQuery.in(
+      "order_id",
+      orderIds.length ? orderIds : ["00000000-0000-0000-0000-000000000000"],
+    );
+  }
+  const { data: lines, error: lErr } = await lineQuery;
   if (lErr) throw new Error(lErr.message);
 
   const variantIds = [
@@ -421,7 +391,7 @@ async function computeSpendVsRevenue(
     };
   });
   records.sort((a, b) => b.spend - a.spend);
-  if (params.limit != null) records = records.slice(0, Number(params.limit));
+  records = refineRecords("spend_vs_revenue_by_supplier", records, params);
 
   const columns = ["supplier", "spend", "revenue", "net", "po_count", "units_sold"];
   const rows = records.map((r) => [
@@ -471,7 +441,13 @@ async function computeSpendVsRevenue(
         id: "top_5",
         label: "Top 5 by spend",
         templateId: "spend_vs_revenue_by_supplier",
-        params: { limit: 5 },
+        params: { ...params, limit: 5 },
+      },
+      {
+        id: "this_quarter",
+        label: "Just this quarter",
+        templateId: "spend_vs_revenue_by_supplier",
+        params: { ...params, period: "this_quarter" },
       },
       {
         id: "margin_view",
@@ -555,8 +531,7 @@ async function computeProfitVsReliability(
   }>;
 
   records.sort((a, b) => b.margin_pct - a.margin_pct);
-  records = applyFollowUpFilter(records, params) as typeof records;
-  if (params.limit != null) records = records.slice(0, Number(params.limit));
+  records = refineRecords("profit_vs_reliability", records, params);
 
   const top = records[0];
   const columns = [
@@ -611,7 +586,7 @@ async function computeProfitVsReliability(
         id: "top_8",
         label: "Top 8 by margin",
         templateId: "profit_vs_reliability",
-        params: { limit: 8 },
+        params: { ...params, limit: 8 },
       },
       {
         id: "late_suppliers",
@@ -633,13 +608,14 @@ async function computeSpendBySupplier(
 ) {
   const { data: closed, error } = await supabase
     .from("purchase_orders")
-    .select("supplier_id, total, suppliers(name)")
+    .select("supplier_id, total, created_at, suppliers(name)")
     .eq("workspace_id", workspaceId)
     .eq("status", "closed");
   if (error) throw new Error(error.message);
 
   const map = new Map<string, { name: string; spend: number; count: number }>();
   for (const po of closed ?? []) {
+    if (!poInDateBounds(po.created_at as string | null, params)) continue;
     const sid = po.supplier_id as string;
     const name = (po.suppliers as { name: string } | null)?.name ?? "Supplier";
     const e = map.get(sid) ?? { name, spend: 0, count: 0 };
@@ -654,7 +630,7 @@ async function computeSpendBySupplier(
       closed_pos: e.count,
     }))
     .sort((a, b) => b.spend - a.spend);
-  if (params.limit != null) records = records.slice(0, Number(params.limit));
+  records = refineRecords("spend_by_supplier", records, params);
 
   const top = records[0];
   return {
@@ -681,6 +657,18 @@ async function computeSpendBySupplier(
       body: null,
     },
     followUps: [
+      {
+        id: "this_quarter",
+        label: "Just this quarter",
+        templateId: "spend_by_supplier",
+        params: { ...params, period: "this_quarter" },
+      },
+      {
+        id: "list_pos",
+        label: "List the closed POs",
+        templateId: "po_list",
+        params: { status: "closed" },
+      },
       {
         id: "vs_rev",
         label: "Compare spend vs. revenue by supplier.",
@@ -719,7 +707,7 @@ async function computeLateSuppliers(
       };
     })
     .sort((a, b) => b.late_pct - a.late_pct);
-  if (params.limit != null) records = records.slice(0, Number(params.limit));
+  records = refineRecords("late_suppliers", records, params);
 
   const top = records[0];
   return {
@@ -755,7 +743,7 @@ async function computeLateSuppliers(
         id: "top_3",
         label: "Worst 3 late rates",
         templateId: "late_suppliers",
-        params: { limit: 3 },
+        params: { ...params, limit: 3 },
       },
     ] satisfies ReportFollowUp[],
     emptyReason: records.length
@@ -811,9 +799,10 @@ async function computeTopSkuMargin(
     margin_pct: number;
   }>;
   records.sort((a, b) => a.margin_pct - b.margin_pct);
-  records = applyFollowUpFilter(records, params) as typeof records;
-  if (params.limit == null) records = records.slice(0, 12);
-  else records = records.slice(0, Number(params.limit));
+  if (params.limit == null && params.columns == null) {
+    records = records.slice(0, 12);
+  }
+  records = refineRecords("top_sku_margin", records, params);
 
   const top = records[0];
   return {
@@ -854,7 +843,7 @@ async function computeTopSkuMargin(
         id: "below_30",
         label: "Only SKUs below 30% margin",
         templateId: "top_sku_margin",
-        params: { max_margin_pct: 30, limit: 20 },
+        params: { ...params, max_margin_pct: 30, limit: 20 },
       },
     ] satisfies ReportFollowUp[],
     emptyReason: records.length
@@ -872,7 +861,7 @@ async function computeDeadStock(
   params: Record<string, string | number | boolean>,
   supabase: SupabaseClient,
 ) {
-  const lookbackDays = 30;
+  const lookbackDays = Number(params.lookback_days ?? 30) || 30;
   const since = new Date();
   since.setUTCDate(since.getUTCDate() - lookbackDays);
   const sinceDate = since.toISOString().slice(0, 10);
@@ -991,10 +980,8 @@ async function computeDeadStock(
     return r.units_30d <= 0 || (r.days_of_cover != null && r.days_of_cover >= 90);
   });
   records.sort((a, b) => b.sort_key - a.sort_key);
-
-  const limit =
-    params.limit != null ? Number(params.limit) : 20;
-  records = records.slice(0, limit);
+  if (params.limit == null) records = records.slice(0, 20);
+  records = refineRecords("dead_stock", records, params);
 
   const anySynthetic = records.some((r) =>
     r.velocity_note.toLowerCase().includes("synthetic"),
@@ -1143,9 +1130,7 @@ async function computeCogsByProduct(
       .sort((a, b) => b.cogs - a.cogs);
   }
 
-  if (params.limit != null) {
-    records = records.slice(0, Number(params.limit));
-  }
+  records = refineRecords("cogs_by_product", records, params);
 
   const top = records[0];
   const columns =
@@ -1213,18 +1198,196 @@ async function computeCogsByProduct(
         id: "by_supplier",
         label: "Roll up by supplier",
         templateId: "cogs_by_product",
-        params: { lookback_days: lookbackDays, group_by: "supplier" },
+        params: { ...params, lookback_days: lookbackDays, group_by: "supplier" },
+      },
+      {
+        id: "by_product",
+        label: "By product instead",
+        templateId: "cogs_by_product",
+        params: { ...params, lookback_days: lookbackDays, group_by: "product" },
       },
       {
         id: "90d",
         label: "Last 90 days",
         templateId: "cogs_by_product",
-        params: { lookback_days: 90, group_by: groupBy },
+        params: { ...params, lookback_days: 90, group_by: groupBy },
       },
     ] satisfies ReportFollowUp[],
     emptyReason: records.length
       ? undefined
       : "Sync Orders and price history (and complete MOs for manufactured goods), or widen the period.",
+  };
+}
+
+async function computePoList(
+  workspaceId: string,
+  params: Record<string, string | number | boolean>,
+) {
+  const bounds = resolveDateBounds(params);
+  const status =
+    typeof params.status === "string" && params.status
+      ? String(params.status)
+      : null;
+  const listed = await listPurchaseOrders(workspaceId, {
+    status,
+    supplierQ:
+      typeof params.supplier_q === "string" ? params.supplier_q : null,
+    dateFrom: bounds.from,
+    dateTo: bounds.to,
+    cap: LIST_VIEW_CAP,
+  });
+
+  let records = listed.rows.map((po) => ({
+    po_number: po.poNumber,
+    supplier: po.supplierName,
+    status: po.statusLabel,
+    total: money(po.totalRaw),
+    ship_date: po.shipDate,
+    arrival: po.estimatedArrivalRaw ?? "—",
+    updated: po.updated,
+    created_at: po.createdAtRaw ? po.createdAtRaw.slice(0, 10) : "—",
+  }));
+  records = refineRecords("po_list", records, params);
+
+  const columns = [
+    "po_number",
+    "supplier",
+    "status",
+    "total",
+    "ship_date",
+    "arrival",
+    "updated",
+    "created_at",
+  ];
+  const rows = records.map((r) =>
+    columns.map((c) => r[c as keyof typeof r] ?? null),
+  );
+  const top = records[0];
+  const statusNote = status ? `${status} ` : "";
+  return {
+    title: status ? `${status[0]!.toUpperCase()}${status.slice(1)} purchase orders` : "Purchase orders",
+    columns,
+    rows,
+    chart: null,
+    records,
+    fallback: {
+      summary: top
+        ? `${records.length} ${statusNote}PO${records.length === 1 ? "" : "s"}` +
+          (listed.total > records.length
+            ? ` (showing ${records.length} of ${listed.total})`
+            : "") +
+          `. First: ${top.po_number} · ${top.supplier} · $${Number(top.total).toFixed(2)}.`
+        : `No ${statusNote}purchase orders match those filters.`,
+      body: null,
+    },
+    followUps: [
+      {
+        id: "closed",
+        label: "Closed only",
+        templateId: "po_list",
+        params: { ...params, status: "closed" },
+      },
+      {
+        id: "this_quarter",
+        label: "This quarter",
+        templateId: "po_list",
+        params: { ...params, period: "this_quarter" },
+      },
+      {
+        id: "cols_core",
+        label: "Just PO #, supplier, total",
+        templateId: "po_list",
+        params: { ...params, columns: "po_number,supplier,total" },
+      },
+      {
+        id: "sort_total",
+        label: "Sort by total",
+        templateId: "po_list",
+        params: { ...params, sort_by: "total", sort_dir: "desc" },
+      },
+    ] satisfies ReportFollowUp[],
+    emptyReason: records.length
+      ? undefined
+      : "No purchase orders match those filters.",
+  };
+}
+
+async function computeReceiptList(
+  workspaceId: string,
+  params: Record<string, string | number | boolean>,
+) {
+  const bounds = resolveDateBounds(params);
+  const condition =
+    typeof params.condition === "string" && params.condition
+      ? (params.condition as ReceiptCondition)
+      : null;
+  const listed = await listReceiptLinesForReport(workspaceId, {
+    condition,
+    supplierQ:
+      typeof params.supplier_q === "string" ? params.supplier_q : null,
+    dateFrom: bounds.from,
+    dateTo: bounds.to,
+    cap: LIST_VIEW_CAP,
+  });
+
+  let records = listed.rows.map((r) => ({
+    received_at: r.receivedAt ? r.receivedAt.slice(0, 10) : "—",
+    po_number: r.poNumber,
+    supplier: r.supplier,
+    sku: r.sku || "—",
+    description: r.description,
+    qty_received: r.qtyReceived,
+    condition: r.condition,
+    reason_note: r.reasonNote ?? "—",
+  }));
+  records = refineRecords("receipt_list", records, params);
+
+  const columns = [
+    "received_at",
+    "po_number",
+    "supplier",
+    "sku",
+    "description",
+    "qty_received",
+    "condition",
+    "reason_note",
+  ];
+  const rows = records.map((r) =>
+    columns.map((c) => r[c as keyof typeof r] ?? null),
+  );
+  const top = records[0];
+  const condNote = condition ? `${condition.replace("_", " ")} ` : "";
+  return {
+    title: condition
+      ? `${condition.replace("_", " ")} receipts`
+      : "Receipts",
+    columns,
+    rows,
+    chart: null,
+    records,
+    fallback: {
+      summary: top
+        ? `${records.length} ${condNote}receipt line${records.length === 1 ? "" : "s"}. First: ${top.po_number} · ${top.supplier} · ${top.condition}.`
+        : `No ${condNote}receipt lines match those filters.`,
+      body: null,
+    },
+    followUps: [
+      {
+        id: "damaged",
+        label: "Damaged only",
+        templateId: "receipt_list",
+        params: { ...params, condition: "damaged" },
+      },
+      {
+        id: "this_quarter",
+        label: "This quarter",
+        templateId: "receipt_list",
+        params: { ...params, period: "this_quarter" },
+      },
+    ] satisfies ReportFollowUp[],
+    emptyReason: records.length
+      ? undefined
+      : "No receipt lines match those filters.",
   };
 }
 
@@ -1236,7 +1399,7 @@ export async function runReportTemplate(opts: {
 }): Promise<ReportResult> {
   const timer = startTimer(`report:${opts.templateId}`);
   const supabase = opts.supabase ?? createServiceClient();
-  const params = opts.params ?? {};
+  const params = sanitizeReportParams(opts.templateId, opts.params ?? {});
   const meta = REPORT_TEMPLATES.find((t) => t.id === opts.templateId);
   if (!meta) {
     throw new Error(`Unknown report template: ${opts.templateId}`);
@@ -1300,17 +1463,41 @@ export async function runReportTemplate(opts: {
         supabase,
       );
       break;
+    case "po_list":
+      computed = await computePoList(opts.workspaceId, params);
+      break;
+    case "receipt_list":
+      computed = await computeReceiptList(opts.workspaceId, params);
+      break;
     default:
       throw new Error(`Unhandled template: ${opts.templateId}`);
   }
+
+  const presented = projectReportColumns(
+    opts.templateId,
+    params,
+    computed.columns,
+    computed.rows,
+  );
+
+  const listingTotal =
+    opts.templateId === "po_list"
+      ? money(
+          computed.records.reduce(
+            (sum, row) => sum + Number(row.total ?? 0),
+            0,
+          ),
+        )
+      : null;
 
   const facts = {
     template_id: opts.templateId,
     title: computed.title,
     params,
-    row_count: computed.rows.length,
+    row_count: presented.rows.length,
     preview_rows: computed.records.slice(0, 8),
     empty_reason: computed.emptyReason ?? null,
+    ...(listingTotal != null ? { closed_po_spend: listingTotal } : {}),
   };
 
   const narrated = await narrateInsight({
@@ -1320,7 +1507,7 @@ export async function runReportTemplate(opts: {
   });
 
   const timingMs = timer.end({
-    rows: computed.rows.length,
+    rows: presented.rows.length,
     narration: narrated.source,
   });
 
@@ -1330,8 +1517,8 @@ export async function runReportTemplate(opts: {
     summary: narrated.summary,
     body: narrated.body,
     narrationSource: narrated.source,
-    columns: computed.columns,
-    rows: computed.rows,
+    columns: presented.columns,
+    rows: presented.rows,
     chart: computed.chart,
     followUps: computed.followUps,
     facts,

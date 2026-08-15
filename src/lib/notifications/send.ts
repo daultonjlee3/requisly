@@ -6,7 +6,7 @@ export async function sendPendingNotifications(
   pending: PendingNotification[],
 ): Promise<{ sent: number; skipped: number; errors: string[] }> {
   const resendKey = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM_EMAIL || "Requisly <notifications@requisly.app>";
+  const from = process.env.RESEND_FROM_EMAIL || "Requisly <orders@requisly.com>";
 
   if (!resendKey) {
     return {

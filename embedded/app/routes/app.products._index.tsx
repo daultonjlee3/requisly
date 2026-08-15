@@ -5,6 +5,7 @@ import {
   useLoaderData,
   useNavigate,
   useNavigation,
+  useSearchParams,
 } from "@remix-run/react";
 import {
   Banner,
@@ -20,17 +21,62 @@ import {
 } from "@shopify/polaris";
 import { InventoryIcon, ProductIcon } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
-import { useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { SectionHeading } from "../components/SectionHeading";
 import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
+import {
+  indexTablePagination,
+  parseListPage,
+  parseListQuery,
+  patchListParams,
+} from "../lib/list-table";
 import { getMerchantContext } from "../lib/merchant.server";
 import { listProductsWorkspace } from "../lib/products.server";
 import { syncShopifyCatalogGraphql } from "../lib/shopify-sync.server";
+import { useFilteredCsvExport } from "../lib/use-filtered-csv-export";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: false });
-  const data = await listProductsWorkspace(merchant.workspace.id);
-  return { workspaceName: merchant.workspace.name, ...data };
+  const url = new URL(request.url);
+  const q = parseListQuery(url.searchParams.get("q"));
+  const catalogPage = parseListPage(url.searchParams.get("cpage"));
+  const variantPage = parseListPage(url.searchParams.get("vpage"));
+  const forExport = url.searchParams.get("export") === "1";
+  const data = await listProductsWorkspace(merchant.workspace.id, {
+    q,
+    catalogPage,
+    variantPage,
+    forExport,
+  });
+  const exportRows = forExport
+    ? [
+        ...data.catalog.map((row) => ({
+          type: "catalog",
+          title: row.title,
+          supplier: row.supplierName,
+          sku: row.sku,
+          cost: row.unitCost,
+          extra: row.moq,
+        })),
+        ...data.variants.map((row) => ({
+          type: "variant",
+          title: row.title,
+          supplier: "",
+          sku: row.sku,
+          cost: row.retailPrice,
+          extra: String(row.onHand),
+        })),
+      ]
+    : null;
+  return {
+    workspaceName: merchant.workspace.name,
+    q,
+    catalogPage,
+    variantPage,
+    exportRows,
+    exportToken: forExport ? Date.now() : null,
+    ...data,
+  };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -50,40 +96,58 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 export default function ProductsPage() {
-  const { workspaceName, catalog, variants, syncedAt } =
-    useLoaderData<typeof loader>();
+  const {
+    workspaceName,
+    catalog,
+    variants,
+    catalogTotal,
+    variantTotal,
+    syncedAt,
+    q,
+    catalogPage,
+    variantPage,
+  } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigate = useNavigate();
   const navigation = useNavigation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const syncing = navigation.state !== "idle" && navigation.formData != null;
-  const [queryValue, setQueryValue] = useState("");
+  const [queryValue, setQueryValue] = useState(q);
+  const applyParams = useCallback(
+    (patch: Record<string, string | null>) => {
+      setSearchParams(patchListParams(searchParams, patch));
+    },
+    [searchParams, setSearchParams],
+  );
+  const { exportCsv, exporting } = useFilteredCsvExport({
+    path: "/app/products",
+    searchParams,
+    prefix: "products",
+    headers: ["type", "title", "supplier", "sku", "cost", "extra"],
+    mapRow: (row: {
+      type: string;
+      title: string;
+      supplier: string;
+      sku: string;
+      cost: string;
+      extra: string;
+    }) => [row.type, row.title, row.supplier, row.sku, row.cost, row.extra],
+  });
 
-  const filteredCatalog = useMemo(() => {
-    const q = queryValue.trim().toLowerCase();
-    if (!q) return catalog;
-    return catalog.filter((row) => {
-      const hay =
-        `${row.title} ${row.sku} ${row.supplierName}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [catalog, queryValue]);
-
-  const filteredVariants = useMemo(() => {
-    const q = queryValue.trim().toLowerCase();
-    if (!q) return variants;
-    return variants.filter((row) => {
-      const hay = `${row.title} ${row.sku}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [variants, queryValue]);
-
-  const hasAnyRows = catalog.length > 0 || variants.length > 0;
+  const hasAnyRows = catalogTotal > 0 || variantTotal > 0 || Boolean(q);
 
   return (
     <Page
       title="Products"
       subtitle={workspaceName}
       primaryAction={{ content: "Add catalog product", url: "/app/products/new" }}
+      secondaryActions={[
+        {
+          content: "Export",
+          onAction: exportCsv,
+          disabled: (catalogTotal === 0 && variantTotal === 0) || exporting,
+        },
+      ]}
     >
       <TitleBar title="Products" />
       <BlockStack gap="500">
@@ -109,11 +173,18 @@ export default function ProductsPage() {
           <Card padding="0">
             <Filters
               queryValue={queryValue}
-              queryPlaceholder="Search by name or SKU"
+              queryPlaceholder="Search by name, SKU, or supplier"
               filters={[]}
               onQueryChange={setQueryValue}
-              onQueryClear={() => setQueryValue("")}
-              onClearAll={() => setQueryValue("")}
+              onQueryClear={() => {
+                setQueryValue("");
+                applyParams({ q: null });
+              }}
+              onQueryBlur={() => applyParams({ q: queryValue || null })}
+              onClearAll={() => {
+                setQueryValue("");
+                applyParams({ q: null });
+              }}
             />
           </Card>
         ) : null}
@@ -125,7 +196,7 @@ export default function ProductsPage() {
               icon={ProductIcon}
               subtitle="Costed items you buy from suppliers."
             />
-            {catalog.length === 0 ? (
+            {catalogTotal === 0 && !q ? (
               <EmptyState
                 heading="No supplier products"
                 action={{ content: "Add product", url: "/app/products/new" }}
@@ -133,7 +204,7 @@ export default function ProductsPage() {
               >
                 <p>Add products with effective unit costs for PO line picking.</p>
               </EmptyState>
-            ) : filteredCatalog.length === 0 ? (
+            ) : catalog.length === 0 ? (
               <EmptyState
                 heading="No catalog products match"
                 image={EMPTY_STATE_IMAGE.products}
@@ -143,7 +214,7 @@ export default function ProductsPage() {
             ) : (
               <IndexTable
                 resourceName={{ singular: "product", plural: "products" }}
-                itemCount={filteredCatalog.length}
+                itemCount={catalog.length}
                 headings={[
                   { title: "Product" },
                   { title: "Supplier" },
@@ -152,8 +223,13 @@ export default function ProductsPage() {
                   { title: "MOQ" },
                 ]}
                 selectable={false}
+                pagination={indexTablePagination({
+                  page: catalogPage,
+                  total: catalogTotal,
+                  onPageChange: (next) => applyParams({ cpage: String(next) }),
+                })}
               >
-                {filteredCatalog.map((row, index) => (
+                {catalog.map((row, index) => (
                   <IndexTable.Row
                     id={row.id}
                     key={row.id}
@@ -183,7 +259,7 @@ export default function ProductsPage() {
               icon={InventoryIcon}
               subtitle="Synced from Admin after catalog sync."
             />
-            {variants.length === 0 ? (
+            {variantTotal === 0 && !q ? (
               <EmptyState
                 heading="No Shopify catalog synced yet"
                 image={EMPTY_STATE_IMAGE.products}
@@ -198,7 +274,7 @@ export default function ProductsPage() {
                   </Button>
                 </Form>
               </EmptyState>
-            ) : filteredVariants.length === 0 ? (
+            ) : variants.length === 0 ? (
               <EmptyState
                 heading="No Shopify variants match"
                 image={EMPTY_STATE_IMAGE.products}
@@ -208,7 +284,7 @@ export default function ProductsPage() {
             ) : (
               <IndexTable
                 resourceName={{ singular: "variant", plural: "variants" }}
-                itemCount={filteredVariants.length}
+                itemCount={variants.length}
                 headings={[
                   { title: "Title" },
                   { title: "SKU" },
@@ -216,8 +292,13 @@ export default function ProductsPage() {
                   { title: "On hand" },
                 ]}
                 selectable={false}
+                pagination={indexTablePagination({
+                  page: variantPage,
+                  total: variantTotal,
+                  onPageChange: (next) => applyParams({ vpage: String(next) }),
+                })}
               >
-                {filteredVariants.map((row, index) => (
+                {variants.map((row, index) => (
                   <IndexTable.Row id={row.id} key={row.id} position={index}>
                     <IndexTable.Cell>{row.title}</IndexTable.Cell>
                     <IndexTable.Cell>{row.sku}</IndexTable.Cell>

@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import { createServiceClient } from "./supabase.server";
 import { relativeTime, shortDate } from "./format";
 import type { CreatePoInitialData } from "./po-types";
+import {
+  resolveListWindow,
+  sanitizeSearch,
+  type ListPageResult,
+} from "./list-table";
 
 export type TemplateStatus = "active" | "archived";
 
@@ -77,16 +82,22 @@ export async function listPoTemplates(
     supplierId?: string | null;
     status?: TemplateStatus | "all" | null;
     sort?: "last_used" | "name" | "created" | null;
+    page?: number;
+    pageSize?: number;
+    forExport?: boolean;
   },
-): Promise<PoTemplateListItem[]> {
+): Promise<ListPageResult<PoTemplateListItem>> {
   const supabase = createServiceClient();
   const status = opts?.status ?? "active";
   const sort = opts?.sort ?? "last_used";
+  const window = resolveListWindow(opts);
+  const q = sanitizeSearch(opts?.q);
 
   let query = supabase
     .from("purchase_order_templates")
     .select(
       "id, name, description, supplier_id, status, use_count, last_used_at, created_at, created_by_label, suppliers(name), purchase_order_template_lines(id, description, sku)",
+      { count: "exact" },
     )
     .eq("workspace_id", workspaceId);
 
@@ -95,6 +106,19 @@ export async function listPoTemplates(
   }
   if (opts?.supplierId) {
     query = query.eq("supplier_id", opts.supplierId);
+  }
+  if (q) {
+    const { data: named } = await supabase
+      .from("suppliers")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .ilike("name", `%${q}%`);
+    const supplierIds = (named ?? []).map((s) => s.id);
+    query = supplierIds.length
+      ? query.or(
+          `name.ilike.%${q}%,description.ilike.%${q}%,supplier_id.in.(${supplierIds.join(",")})`,
+        )
+      : query.or(`name.ilike.%${q}%,description.ilike.%${q}%`);
   }
 
   if (sort === "name") {
@@ -108,29 +132,10 @@ export async function listPoTemplates(
       .order("created_at", { ascending: false });
   }
 
-  const { data, error } = await query;
+  const { data, error, count } = await query.range(window.from, window.to);
   if (error) throw new Error(error.message);
 
-  const q = opts?.q?.trim().toLowerCase() ?? "";
-  const rows = (data ?? []).filter((row) => {
-    if (!q) return true;
-    const supplier = row.suppliers as unknown as { name: string } | null;
-    const lines = (row.purchase_order_template_lines ?? []) as Array<{
-      description: string;
-      sku: string | null;
-    }>;
-    const hay = [
-      row.name,
-      row.description ?? "",
-      supplier?.name ?? "",
-      ...lines.map((l) => `${l.description} ${l.sku ?? ""}`),
-    ]
-      .join(" ")
-      .toLowerCase();
-    return hay.includes(q);
-  });
-
-  return rows.map((row) => {
+  const rows = (data ?? []).map((row) => {
     const supplier = row.suppliers as unknown as { name: string } | null;
     const lines = (row.purchase_order_template_lines ?? []) as Array<{
       id: string;
@@ -153,6 +158,7 @@ export async function listPoTemplates(
       createdBy: row.created_by_label?.trim() || "Merchant",
     };
   });
+  return { rows, total: count ?? rows.length };
 }
 
 export async function listTemplatePickerSuggestions(

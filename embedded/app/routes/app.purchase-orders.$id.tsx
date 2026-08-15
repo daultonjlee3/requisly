@@ -84,7 +84,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     documents,
     shipments,
     workspaceName: merchant.workspace.name,
-    existingTemplates: templates.map((t) => ({ id: t.id, name: t.name })),
+    existingTemplates: templates.rows.map((t) => ({ id: t.id, name: t.name })),
     justEdited: url.searchParams.get("edited") === "1",
   };
 };

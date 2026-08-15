@@ -6,6 +6,7 @@ import {
   useActionData,
   useLoaderData,
   useNavigation,
+  useSearchParams,
 } from "@remix-run/react";
 import {
   Badge,
@@ -14,13 +15,22 @@ import {
   Box,
   Button,
   Card,
+  Filters,
   IndexTable,
   InlineStack,
   Page,
   Text,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
+import { useCallback, useState } from "react";
+import {
+  indexTablePagination,
+  parseListPage,
+  parseListQuery,
+  patchListParams,
+} from "../lib/list-table";
 import { getMerchantContext } from "../lib/merchant.server";
+import { useFilteredCsvExport } from "../lib/use-filtered-csv-export";
 import {
   acceptMakeToOrderSuggestion,
   listMakeToOrderSuggestions,
@@ -29,14 +39,48 @@ import {
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: false });
+  const url = new URL(request.url);
+  const q = parseListQuery(url.searchParams.get("q"));
+  const page = parseListPage(url.searchParams.get("page"));
+  const suggestionPage = parseListPage(url.searchParams.get("spage"));
+  const forExport = url.searchParams.get("export") === "1";
   const [orders, suggestions] = await Promise.all([
-    listManufacturingOrders(merchant.workspace.id),
-    listMakeToOrderSuggestions(merchant.workspace.id),
+    listManufacturingOrders(merchant.workspace.id, {
+      q,
+      ...(forExport ? { forExport: true } : { page }),
+    }),
+    listMakeToOrderSuggestions(merchant.workspace.id, {
+      q,
+      ...(forExport ? { forExport: true } : { page: suggestionPage }),
+    }),
   ]);
+  const exportRows = forExport
+    ? [
+        ...orders.rows.map((mo) => ({
+          type: "mo",
+          name: mo.finishedTitle,
+          extra: mo.status,
+          qty: mo.qtyToMake,
+        })),
+        ...suggestions.rows.map((s) => ({
+          type: "mto_suggestion",
+          name: `${s.orderName} ${s.finishedTitle}`,
+          extra: s.suggestedLocationName,
+          qty: s.qtyToMake,
+        })),
+      ]
+    : null;
   return {
-    orders,
-    suggestions,
+    orders: orders.rows,
+    orderTotal: orders.total,
+    suggestions: suggestions.rows,
+    suggestionTotal: suggestions.total,
     workspaceName: merchant.workspace.name,
+    q,
+    page,
+    suggestionPage,
+    exportRows,
+    exportToken: forExport ? Date.now() : null,
   };
 };
 
@@ -75,11 +119,39 @@ function statusTone(
 }
 
 export default function ManufacturingIndex() {
-  const { orders, suggestions, workspaceName } =
-    useLoaderData<typeof loader>();
+  const {
+    orders,
+    orderTotal,
+    suggestions,
+    suggestionTotal,
+    workspaceName,
+    q,
+    page,
+    suggestionPage,
+  } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
+  const [searchParams, setSearchParams] = useSearchParams();
   const busy = navigation.state !== "idle";
+  const [queryValue, setQueryValue] = useState(q);
+  const applyParams = useCallback(
+    (patch: Record<string, string | null>) => {
+      setSearchParams(patchListParams(searchParams, patch));
+    },
+    [searchParams, setSearchParams],
+  );
+  const { exportCsv, exporting } = useFilteredCsvExport({
+    path: "/app/manufacturing",
+    searchParams,
+    prefix: "manufacturing",
+    headers: ["type", "name", "qty", "extra"],
+    mapRow: (row: { type: string; name: string; qty: number; extra: string }) => [
+      row.type,
+      row.name,
+      row.qty,
+      row.extra,
+    ],
+  });
 
   return (
     <Page
@@ -87,6 +159,11 @@ export default function ManufacturingIndex() {
       subtitle={workspaceName}
       primaryAction={{ content: "New MO", url: "/app/manufacturing/new" }}
       secondaryActions={[
+        {
+          content: "Export",
+          onAction: exportCsv,
+          disabled: (orderTotal === 0 && suggestionTotal === 0) || exporting,
+        },
         { content: "Bills of materials", url: "/app/manufacturing/recipes" },
       ]}
     >
@@ -97,6 +174,24 @@ export default function ManufacturingIndex() {
             <p>{actionData.error}</p>
           </Banner>
         ) : null}
+
+        <Card padding="0">
+          <Filters
+            queryValue={queryValue}
+            queryPlaceholder="Search finished product or sales order"
+            filters={[]}
+            onQueryChange={setQueryValue}
+            onQueryClear={() => {
+              setQueryValue("");
+              applyParams({ q: null });
+            }}
+            onQueryBlur={() => applyParams({ q: queryValue || null })}
+            onClearAll={() => {
+              setQueryValue("");
+              applyParams({ q: null });
+            }}
+          />
+        </Card>
 
         <Card>
           <BlockStack gap="300">
@@ -119,6 +214,11 @@ export default function ManufacturingIndex() {
                   plural: "suggestions",
                 }}
                 itemCount={suggestions.length}
+                pagination={indexTablePagination({
+                  page: suggestionPage,
+                  total: suggestionTotal,
+                  onPageChange: (next) => applyParams({ spage: String(next) }),
+                })}
                 headings={[
                   { title: "Sales order" },
                   { title: "Product" },
@@ -185,7 +285,7 @@ export default function ManufacturingIndex() {
         </Card>
 
         <Card padding="0">
-          {orders.length === 0 ? (
+          {orderTotal === 0 && !q ? (
             <Box padding="400">
               <BlockStack gap="200">
                 <Text as="p" tone="subdued">
@@ -204,6 +304,11 @@ export default function ManufacturingIndex() {
             <IndexTable
               resourceName={{ singular: "MO", plural: "MOs" }}
               itemCount={orders.length}
+              pagination={indexTablePagination({
+                page,
+                total: orderTotal,
+                onPageChange: (next) => applyParams({ page: String(next) }),
+              })}
               headings={[
                 { title: "Finished product" },
                 { title: "Qty" },

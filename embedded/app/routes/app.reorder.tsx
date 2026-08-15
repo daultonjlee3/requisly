@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { Form, useLoaderData, useNavigation } from "@remix-run/react";
+import { Form, useLoaderData, useNavigation, useSearchParams } from "@remix-run/react";
 import {
   Badge,
   Banner,
@@ -7,6 +7,7 @@ import {
   Box,
   Button,
   Card,
+  Filters,
   IndexTable,
   InlineStack,
   Page,
@@ -21,13 +22,28 @@ import {
   runInventoryAgent,
   workspaceIsInsightEligible,
 } from "../lib/ai-agents.server";
+import {
+  indexTablePagination,
+  parseListPage,
+  parseListQuery,
+  patchListParams,
+} from "../lib/list-table";
 import { getMerchantContext } from "../lib/merchant.server";
 import { listReorderRecommendations } from "../lib/reorder.server";
+import { useFilteredCsvExport } from "../lib/use-filtered-csv-export";
+import { useCallback, useState } from "react";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: false });
+  const url = new URL(request.url);
+  const q = parseListQuery(url.searchParams.get("q"));
+  const page = parseListPage(url.searchParams.get("page"));
+  const forExport = url.searchParams.get("export") === "1";
   const [recs, insights, gate] = await Promise.all([
-    listReorderRecommendations(merchant.workspace.id),
+    listReorderRecommendations(merchant.workspace.id, {
+      q,
+      ...(forExport ? { forExport: true } : { page }),
+    }),
     listActiveInsights(merchant.workspace.id, 40),
     workspaceIsInsightEligible(merchant.workspace.id),
   ]);
@@ -40,6 +56,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     eligible: gate.eligible,
     gateReason: gate.reason ?? null,
     inventoryInsights,
+    q,
+    page,
+    exportRows: forExport ? recs.rows : null,
+    exportToken: forExport ? Date.now() : null,
     ...recs,
   };
 };
@@ -73,13 +93,49 @@ export default function ReorderPage() {
   const {
     workspaceName,
     rows,
+    total,
     anySyntheticVelocity,
     needsReorderCount,
     inventoryInsights,
     eligible,
     gateReason,
+    q,
+    page,
   } = useLoaderData<typeof loader>();
   const navigation = useNavigation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [queryValue, setQueryValue] = useState(q);
+  const applyParams = useCallback(
+    (patch: Record<string, string | null>) => {
+      setSearchParams(patchListParams(searchParams, patch));
+    },
+    [searchParams, setSearchParams],
+  );
+  const { exportCsv, exporting } = useFilteredCsvExport({
+    path: "/app/reorder",
+    searchParams,
+    prefix: "reorder",
+    headers: [
+      "title",
+      "sku",
+      "on_hand",
+      "units_per_day",
+      "lead_time_days",
+      "lead_time_source",
+      "reorder_point",
+      "needs_reorder",
+    ],
+    mapRow: (row: (typeof rows)[number]) => [
+      row.title,
+      row.sku ?? "",
+      row.on_hand,
+      row.units_per_day,
+      row.lead_time_days,
+      row.lead_time_source,
+      row.reorder_point,
+      row.needs_reorder ? "yes" : "no",
+    ],
+  });
   const running =
     navigation.state !== "idle" &&
     navigation.formData?.get("intent") === "run_inventory_agent";
@@ -89,6 +145,13 @@ export default function ReorderPage() {
       title="Reorder recommendations"
       subtitle={workspaceName}
       backAction={{ content: "Products", url: "/app/products" }}
+      secondaryActions={[
+        {
+          content: "Export",
+          onAction: exportCsv,
+          disabled: total === 0 || exporting,
+        },
+      ]}
     >
       <TitleBar title="Reorder" />
       <BlockStack gap="500">
@@ -208,7 +271,25 @@ export default function ReorderPage() {
         ) : null}
 
         <Card padding="0">
-          {rows.length === 0 ? (
+          <Filters
+            queryValue={queryValue}
+            queryPlaceholder="Search by product or SKU"
+            filters={[]}
+            onQueryChange={setQueryValue}
+            onQueryClear={() => {
+              setQueryValue("");
+              applyParams({ q: null });
+            }}
+            onQueryBlur={() => applyParams({ q: queryValue || null })}
+            onClearAll={() => {
+              setQueryValue("");
+              applyParams({ q: null });
+            }}
+          />
+        </Card>
+
+        <Card padding="0">
+          {total === 0 ? (
             <Box padding="400">
               <Text as="p" tone="subdued">
                 No reorder settings yet. Enable reorder points on products that
@@ -219,6 +300,11 @@ export default function ReorderPage() {
             <IndexTable
               resourceName={{ singular: "SKU", plural: "SKUs" }}
               itemCount={rows.length}
+              pagination={indexTablePagination({
+                page,
+                total,
+                onPageChange: (next) => applyParams({ page: String(next) }),
+              })}
               headings={[
                 { title: "Product" },
                 { title: "On hand" },

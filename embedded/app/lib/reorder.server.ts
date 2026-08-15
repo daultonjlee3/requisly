@@ -1,4 +1,9 @@
 import { createServiceClient } from "./supabase.server";
+import {
+  resolveListWindow,
+  sanitizeSearch,
+  type ListPageOpts,
+} from "./list-table";
 
 export type ReorderRecommendation = {
   reorder_setting_id: string;
@@ -20,18 +25,25 @@ export type ReorderRecommendation = {
 
 export async function listReorderRecommendations(
   workspaceId: string,
+  opts?: ListPageOpts,
 ): Promise<{
   rows: ReorderRecommendation[];
+  total: number;
   anySyntheticVelocity: boolean;
   needsReorderCount: number;
 }> {
   const supabase = createServiceClient();
-  const { data, error } = await supabase
+  const window = resolveListWindow(opts);
+  const q = sanitizeSearch(opts?.q);
+  let query = supabase
     .from("reorder_recommendations")
-    .select("*")
+    .select("*", { count: "exact" })
     .eq("workspace_id", workspaceId)
     .order("needs_reorder", { ascending: false })
     .order("title", { ascending: true });
+  if (q) query = query.or(`title.ilike.%${q}%,sku.ilike.%${q}%`);
+
+  const { data, error, count } = await query.range(window.from, window.to);
   if (error) throw new Error(error.message);
 
   const rows = (data ?? []).map((r) => ({
@@ -59,9 +71,18 @@ export async function listReorderRecommendations(
     needs_reorder: Boolean(r.needs_reorder),
   }));
 
+  const total = count ?? rows.length;
+  const { count: needsCount, error: needsErr } = await supabase
+    .from("reorder_recommendations")
+    .select("product_variant_id", { count: "exact", head: true })
+    .eq("workspace_id", workspaceId)
+    .eq("needs_reorder", true);
+  if (needsErr) throw new Error(needsErr.message);
+
   return {
     rows,
+    total,
     anySyntheticVelocity: rows.some((r) => r.velocity_is_synthetic_test),
-    needsReorderCount: rows.filter((r) => r.needs_reorder).length,
+    needsReorderCount: needsCount ?? rows.filter((r) => r.needs_reorder).length,
   };
 }

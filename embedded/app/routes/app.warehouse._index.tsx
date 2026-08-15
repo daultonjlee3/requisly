@@ -1,31 +1,110 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { Link, useLoaderData } from "@remix-run/react";
+import { Link, useLoaderData, useSearchParams } from "@remix-run/react";
 import {
   Badge,
   BlockStack,
   Box,
   Button,
   Card,
+  Filters,
   IndexTable,
   InlineStack,
   Page,
   Text,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
+import { useCallback, useState } from "react";
+import {
+  indexTablePagination,
+  parseListPage,
+  parseListQuery,
+  patchListParams,
+} from "../lib/list-table";
 import { getMerchantContext } from "../lib/merchant.server";
 import { listStocktakes, listTransfers } from "../lib/warehouse.server";
+import { useFilteredCsvExport } from "../lib/use-filtered-csv-export";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: false });
+  const url = new URL(request.url);
+  const q = parseListQuery(url.searchParams.get("q"));
+  const tPage = parseListPage(url.searchParams.get("tpage"));
+  const sPage = parseListPage(url.searchParams.get("spage"));
+  const forExport = url.searchParams.get("export") === "1";
   const [transfers, stocktakes] = await Promise.all([
-    listTransfers(merchant.workspace.id),
-    listStocktakes(merchant.workspace.id),
+    listTransfers(merchant.workspace.id, {
+      q,
+      ...(forExport ? { forExport: true } : { page: tPage }),
+    }),
+    listStocktakes(merchant.workspace.id, {
+      q,
+      ...(forExport ? { forExport: true } : { page: sPage }),
+    }),
   ]);
-  return { transfers, stocktakes, workspaceName: merchant.workspace.name };
+  const exportRows = forExport
+    ? [
+        ...transfers.rows.map((t) => ({
+          type: "transfer",
+          name: `${t.fromLocationName} → ${t.toLocationName}`,
+          status: t.status,
+          lines: t.lineCount,
+          date: t.createdAt,
+        })),
+        ...stocktakes.rows.map((s) => ({
+          type: "stocktake",
+          name: s.locationName,
+          status: s.status,
+          lines: s.lineCount,
+          date: s.startedAt,
+        })),
+      ]
+    : null;
+  return {
+    transfers: transfers.rows,
+    transferTotal: transfers.total,
+    stocktakes: stocktakes.rows,
+    stocktakeTotal: stocktakes.total,
+    workspaceName: merchant.workspace.name,
+    q,
+    tPage,
+    sPage,
+    exportRows,
+    exportToken: forExport ? Date.now() : null,
+  };
 };
 
 export default function WarehouseIndex() {
-  const { transfers, stocktakes, workspaceName } = useLoaderData<typeof loader>();
+  const {
+    transfers,
+    transferTotal,
+    stocktakes,
+    stocktakeTotal,
+    workspaceName,
+    q,
+    tPage,
+    sPage,
+  } = useLoaderData<typeof loader>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [queryValue, setQueryValue] = useState(q);
+  const applyParams = useCallback(
+    (patch: Record<string, string | null>) => {
+      setSearchParams(patchListParams(searchParams, patch));
+    },
+    [searchParams, setSearchParams],
+  );
+  const { exportCsv, exporting } = useFilteredCsvExport({
+    path: "/app/warehouse",
+    searchParams,
+    prefix: "warehouse",
+    headers: ["type", "name", "status", "lines", "date"],
+    mapRow: (row: {
+      type: string;
+      name: string;
+      status: string;
+      lines: number;
+      date: string;
+    }) => [row.type, row.name, row.status, row.lines, row.date],
+  });
 
   return (
     <Page
@@ -36,11 +115,33 @@ export default function WarehouseIndex() {
         url: "/app/warehouse/transfers/new",
       }}
       secondaryActions={[
+        {
+          content: "Export",
+          onAction: exportCsv,
+          disabled: (transferTotal === 0 && stocktakeTotal === 0) || exporting,
+        },
         { content: "New stocktake", url: "/app/warehouse/stocktakes/new" },
       ]}
     >
       <TitleBar title="Warehouse" />
       <BlockStack gap="500">
+        <Card padding="0">
+          <Filters
+            queryValue={queryValue}
+            queryPlaceholder="Search by location"
+            filters={[]}
+            onQueryChange={setQueryValue}
+            onQueryClear={() => {
+              setQueryValue("");
+              applyParams({ q: null });
+            }}
+            onQueryBlur={() => applyParams({ q: queryValue || null })}
+            onClearAll={() => {
+              setQueryValue("");
+              applyParams({ q: null });
+            }}
+          />
+        </Card>
         <Card>
           <BlockStack gap="300">
             <InlineStack align="space-between" blockAlign="center">
@@ -49,10 +150,11 @@ export default function WarehouseIndex() {
               </Text>
               <Button url="/app/warehouse/transfers/new">New transfer</Button>
             </InlineStack>
-            {transfers.length === 0 ? (
+            {transferTotal === 0 ? (
               <Text as="p" tone="subdued">
-                No transfers yet. Move stock between locations with
-                draft → in transit → received.
+                {q
+                  ? "No transfers match."
+                  : "No transfers yet. Move stock between locations with draft → in transit → received."}
               </Text>
             ) : (
               <IndexTable
@@ -65,6 +167,11 @@ export default function WarehouseIndex() {
                   { title: "Created" },
                 ]}
                 selectable={false}
+                pagination={indexTablePagination({
+                  page: tPage,
+                  total: transferTotal,
+                  onPageChange: (next) => applyParams({ tpage: String(next) }),
+                })}
               >
                 {transfers.map((t, i) => (
                   <IndexTable.Row id={t.id} key={t.id} position={i}>
@@ -107,11 +214,12 @@ export default function WarehouseIndex() {
               </Text>
               <Button url="/app/warehouse/stocktakes/new">New stocktake</Button>
             </InlineStack>
-            {stocktakes.length === 0 ? (
+            {stocktakeTotal === 0 ? (
               <Box>
                 <Text as="p" tone="subdued">
-                  No stocktakes yet. Count expected vs physical and apply
-                  variance in one transaction.
+                  {q
+                    ? "No stocktakes match."
+                    : "No stocktakes yet. Count expected vs physical and apply variance in one transaction."}
                 </Text>
               </Box>
             ) : (
@@ -125,6 +233,11 @@ export default function WarehouseIndex() {
                   { title: "Started" },
                 ]}
                 selectable={false}
+                pagination={indexTablePagination({
+                  page: sPage,
+                  total: stocktakeTotal,
+                  onPageChange: (next) => applyParams({ spage: String(next) }),
+                })}
               >
                 {stocktakes.map((s, i) => (
                   <IndexTable.Row id={s.id} key={s.id} position={i}>

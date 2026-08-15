@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useTransition } from "react";
-import { createClient } from "@/lib/supabase/client";
+import { useState, useTransition } from "react";
+import { runSupplierLinkAction } from "@/lib/supplier-link-actions";
 import { money, shortDate } from "@/lib/format";
 import { statusChipClass, statusLabel } from "@/lib/po-status";
 import type { PoStatus } from "@/lib/types";
@@ -95,35 +95,74 @@ function documentKindLabel(kind: string) {
   }
 }
 
-export function SupplierLinkClient({ token }: { token: string }) {
-  const [data, setData] = useState<LinkPayload | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [shipDate, setShipDate] = useState("");
+function asPayload(raw: unknown): LinkPayload | null {
+  const value =
+    typeof raw === "string"
+      ? (() => {
+          try {
+            return JSON.parse(raw) as unknown;
+          } catch {
+            return null;
+          }
+        })()
+      : raw;
+  if (!value || typeof value !== "object") return null;
+  const parsed = value as LinkPayload;
+  if (!parsed.po || !Array.isArray(parsed.line_items)) return null;
+  return parsed;
+}
+
+function formStateFromPayload(parsed: LinkPayload | null) {
+  const shipmentLineQtys: Record<string, string> = {};
+  const drafts: Record<string, LineProposalDraft> = {};
+  for (const line of parsed?.line_items ?? []) {
+    shipmentLineQtys[line.id] = "";
+    drafts[line.id] = {
+      enabled: false,
+      qty: String(line.qty),
+      unit_cost: String(line.unit_cost),
+      note: "",
+    };
+  }
+  return {
+    shipDate:
+      parsed?.po.confirmed_ship_date || parsed?.po.requested_ship_date || "",
+    estimatedArrival: parsed?.po.estimated_arrival_date || "",
+    shipmentLineQtys,
+    drafts,
+  };
+}
+
+export function SupplierLinkClient({
+  token,
+  initialData,
+  initialError,
+}: {
+  token: string;
+  initialData: unknown;
+  initialError: string | null;
+}) {
+  const starting = asPayload(initialData);
+  const startingForm = formStateFromPayload(starting);
+  const [data, setData] = useState<LinkPayload | null>(starting);
+  const [error, setError] = useState<string | null>(
+    initialError ?? (initialData && !starting ? "This link could not be read." : null),
+  );
+  const [shipDate, setShipDate] = useState(startingForm.shipDate);
   const [tracking, setTracking] = useState("");
   const [carrier, setCarrier] = useState("UPS");
-  const [estimatedArrival, setEstimatedArrival] = useState("");
+  const [estimatedArrival, setEstimatedArrival] = useState(
+    startingForm.estimatedArrival,
+  );
   const [shipmentNote, setShipmentNote] = useState("");
-  const [shipmentLineQtys, setShipmentLineQtys] = useState<
-    Record<string, string>
-  >({});
+  const [shipmentLineQtys, setShipmentLineQtys] = useState(
+    startingForm.shipmentLineQtys,
+  );
   const [rejectNote, setRejectNote] = useState("");
   const [showReject, setShowReject] = useState(false);
-  const [drafts, setDrafts] = useState<Record<string, LineProposalDraft>>({});
+  const [drafts, setDrafts] = useState(startingForm.drafts);
   const [pending, startTransition] = useTransition();
   const [message, setMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    const supabase = createClient();
-    void supabase
-      .rpc("supplier_link_open", { p_token: token })
-      .then(({ data: payload, error: rpcError }) => {
-        if (rpcError) {
-          setError(rpcError.message);
-          return;
-        }
-        applyPayload(payload as LinkPayload);
-      });
-  }, [token]);
 
   function applyPayload(parsed: LinkPayload) {
     setData(parsed);
@@ -160,13 +199,20 @@ export function SupplierLinkClient({ token }: { token: string }) {
     startTransition(async () => {
       setMessage(null);
       setError(null);
-      const supabase = createClient();
-      const { data: payload, error: rpcError } = await supabase.rpc(name, args);
+      const { data: payload, error: rpcError } = await runSupplierLinkAction(
+        name,
+        args,
+      );
       if (rpcError) {
         setError(rpcError.message);
         return;
       }
-      applyPayload(payload as LinkPayload);
+      const next = asPayload(payload);
+      if (!next) {
+        setError("This link could not be read.");
+        return;
+      }
+      applyPayload(next);
       setMessage(successMessage);
       setShowReject(false);
       if (name === "supplier_link_add_shipment" || name === "supplier_link_ship") {

@@ -37,7 +37,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       .order("name"),
   ]);
   return {
-    recipes,
+    recipes: recipes.rows,
     locations: (locations ?? []).map((l) => ({
       id: l.id as string,
       name: l.name as string,

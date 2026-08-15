@@ -65,7 +65,7 @@ const url = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL;
 const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const resendKey = process.env.RESEND_API_KEY;
 const from =
-  process.env.RESEND_FROM_EMAIL || "Requisly <notifications@requisly.app>";
+  process.env.RESEND_FROM_EMAIL || "Requisly <orders@requisly.com>";
 const appUrl = (
   process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3001"
 ).replace(/\/$/, "");

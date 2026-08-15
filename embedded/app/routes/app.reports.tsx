@@ -20,7 +20,7 @@ import {
 } from "@shopify/polaris";
 import { ChartVerticalIcon, SaveIcon } from "@shopify/polaris-icons";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ReportResultView } from "../components/ReportResultView";
 import { SectionHeading } from "../components/SectionHeading";
 import { getMerchantContext } from "../lib/merchant.server";
@@ -49,6 +49,7 @@ type ActionPayload = {
   pinnedId: string | null;
   savedId: string | null;
   matchExplanation: string | null;
+  declined?: boolean;
   sync?: { orders: number; lineItems: number };
 };
 
@@ -122,13 +123,45 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
     if (intent === "run_prompt") {
       const prompt = String(form.get("prompt") ?? "").trim();
-      const match = await mapPromptToReportTemplate(prompt);
+      let previous: {
+        templateId: string;
+        params: Record<string, string | number | boolean>;
+        prompt?: string | null;
+      } | null = null;
+      const prevId = String(form.get("previous_template_id") ?? "").trim();
+      if (prevId) {
+        let prevParams: Record<string, string | number | boolean> = {};
+        try {
+          prevParams = JSON.parse(
+            String(form.get("previous_params") ?? "{}"),
+          ) as Record<string, string | number | boolean>;
+        } catch {
+          prevParams = {};
+        }
+        previous = {
+          templateId: prevId,
+          params: prevParams,
+          prompt: String(form.get("previous_prompt") ?? "").trim() || null,
+        };
+      }
+      let previousResult: ReportResult | null = null;
+      const resultRaw = String(form.get("result_json") ?? "");
+      if (resultRaw) {
+        try {
+          previousResult = JSON.parse(resultRaw) as ReportResult;
+        } catch {
+          previousResult = null;
+        }
+      }
+      const match = await mapPromptToReportTemplate(prompt, previous);
       if (!match.templateId) {
-        timer.end({ intent, unmatched: true });
+        timer.end({ intent, unmatched: true, declined: match.declined });
         return {
           ...empty,
           error: match.explanation,
           matchExplanation: match.explanation,
+          declined: Boolean(match.declined),
+          result: previousResult,
         };
       }
       const result = await runReportTemplate({
@@ -276,6 +309,13 @@ export default function ReportsPage() {
   const [requestingScope, setRequestingScope] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [saveTitle, setSaveTitle] = useState("");
+  const [sessionResult, setSessionResult] = useState<ReportResult | null>(null);
+
+  useEffect(() => {
+    if (actionData?.result) setSessionResult(actionData.result);
+  }, [actionData?.result]);
+
+  const displayResult = actionData?.result ?? sessionResult;
 
   const runningPrompt =
     navigation.state !== "idle" &&
@@ -335,24 +375,37 @@ export default function ReportsPage() {
     [submit],
   );
 
+  const submitPrompt = useCallback(
+    (text: string) => {
+      const fd = new FormData();
+      fd.set("intent", "run_prompt");
+      fd.set("prompt", text);
+      if (displayResult) {
+        fd.set("previous_template_id", displayResult.templateId);
+        fd.set("previous_params", JSON.stringify(displayResult.params ?? {}));
+        fd.set("previous_prompt", displayResult.prompt ?? "");
+        fd.set("result_json", JSON.stringify(displayResult));
+      }
+      submit(fd, { method: "post" });
+    },
+    [displayResult, submit],
+  );
+
   const runPrompt = useCallback(() => {
-    const fd = new FormData();
-    fd.set("intent", "run_prompt");
-    fd.set("prompt", prompt);
-    submit(fd, { method: "post" });
-  }, [prompt, submit]);
+    submitPrompt(prompt);
+  }, [prompt, submitPrompt]);
 
   const pin = useCallback(() => {
-    if (!actionData?.result) return;
+    if (!displayResult) return;
     const fd = new FormData();
     fd.set("intent", "pin");
-    fd.set("result_json", JSON.stringify(actionData.result));
+    fd.set("result_json", JSON.stringify(displayResult));
     submit(fd, { method: "post" });
-  }, [actionData?.result, submit]);
+  }, [displayResult, submit]);
 
   const save = useCallback(() => {
-    if (!actionData?.result) return;
-    const result = actionData.result;
+    if (!displayResult) return;
+    const result = displayResult;
     const fd = new FormData();
     fd.set("intent", "save");
     fd.set(
@@ -364,7 +417,7 @@ export default function ReportsPage() {
     fd.set("params", JSON.stringify(result.params ?? {}));
     fd.set("result_json", JSON.stringify(result));
     submit(fd, { method: "post" });
-  }, [actionData?.result, saveTitle, submit]);
+  }, [displayResult, saveTitle, submit]);
 
   const deleteSaved = useCallback(
     (id: string) => {
@@ -414,7 +467,7 @@ export default function ReportsPage() {
         )}
 
         {actionData?.error ? (
-          <Banner tone="critical">
+          <Banner tone={actionData.declined ? "warning" : "critical"}>
             <p>{actionData.error}</p>
           </Banner>
         ) : null}
@@ -487,7 +540,7 @@ export default function ReportsPage() {
             <SectionHeading
               title="Ask your own question"
               icon={ChartVerticalIcon}
-              subtitle="We map your wording onto a built-in template — never invent SQL. Thresholds like “below 30%” become filters."
+              subtitle="We map your wording onto a built-in template — never invent SQL. Follow-ups reuse the last report when they fit (filters, columns, sort)."
             />
             <TextField
               label="Your question"
@@ -570,10 +623,12 @@ export default function ReportsPage() {
           </Card>
         ) : null}
 
-        {actionData?.result ? (
+        {displayResult ? (
           <ReportResultView
-            result={actionData.result}
+            result={displayResult}
             onFollowUp={runTemplate}
+            onFollowUpPrompt={submitPrompt}
+            followUpLoading={runningPrompt}
             onPin={pin}
             pinning={pinning}
             onSave={save}

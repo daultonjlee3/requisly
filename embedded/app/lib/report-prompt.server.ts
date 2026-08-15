@@ -4,164 +4,47 @@
  */
 import { CLAUDE_INSIGHT_MODEL } from "./ai-narration.server";
 import { REPORT_TEMPLATES } from "./report-builder.server";
+import {
+  REPORT_TEMPLATE_DEFS,
+  availableFieldsHint,
+  mapReportPromptHeuristic,
+  sanitizeReportParams,
+  unmatchedExplanation,
+  type ReportParams,
+  type ReportPromptContext,
+} from "./report-params";
 import { startTimer } from "./timing.server";
 
 export type ReportPromptMatch = {
   templateId: string;
-  params: Record<string, string | number | boolean>;
+  params: ReportParams;
   confidence: "high" | "medium" | "low";
   source: "heuristic" | "claude" | "none";
-  /** Human-readable explanation of what will run. */
+  /** Human-readable explanation of what will run — or why it will not. */
   explanation: string;
+  declined?: boolean;
 };
 
 const TEMPLATE_IDS = new Set(REPORT_TEMPLATES.map((t) => t.id));
 
-const ALLOWED_PARAM_KEYS = new Set([
-  "limit",
-  "min_margin_pct",
-  "max_margin_pct",
-  "zero_sales_only",
-]);
-
-function sanitizeParams(
-  raw: Record<string, unknown> | null | undefined,
-): Record<string, string | number | boolean> {
-  const out: Record<string, string | number | boolean> = {};
-  if (!raw || typeof raw !== "object") return out;
-  for (const [key, value] of Object.entries(raw)) {
-    if (!ALLOWED_PARAM_KEYS.has(key)) continue;
-    if (typeof value === "boolean") {
-      out[key] = value;
-      continue;
-    }
-    if (typeof value === "number" && Number.isFinite(value)) {
-      if (key === "limit") out[key] = Math.min(50, Math.max(1, Math.round(value)));
-      else if (key.endsWith("_pct"))
-        out[key] = Math.min(100, Math.max(0, Math.round(value * 10) / 10));
-      else out[key] = value;
-      continue;
-    }
-    if (typeof value === "string" && value.trim()) {
-      const n = Number(value);
-      if (Number.isFinite(n)) {
-        if (key === "limit") out[key] = Math.min(50, Math.max(1, Math.round(n)));
-        else if (key.endsWith("_pct"))
-          out[key] = Math.min(100, Math.max(0, Math.round(n * 10) / 10));
-        else out[key] = n;
-      }
-    }
-  }
-  return out;
-}
-
-function extractThresholds(prompt: string): Record<string, number> {
-  const params: Record<string, number> = {};
-  const below = prompt.match(
-    /\b(?:below|under|less than|<)\s*(\d{1,3}(?:\.\d+)?)\s*%?/i,
-  );
-  const above = prompt.match(
-    /\b(?:above|over|more than|greater than|>)\s*(\d{1,3}(?:\.\d+)?)\s*%?/i,
-  );
-  const topN = prompt.match(/\b(?:top|bottom)\s*(\d{1,2})\b/i);
-  if (below) params.max_margin_pct = Number(below[1]);
-  if (above) params.min_margin_pct = Number(above[1]);
-  if (topN) params.limit = Number(topN[1]);
-  return params;
-}
-
-function scoreHeuristic(prompt: string): ReportPromptMatch | null {
-  const p = prompt.toLowerCase();
-  const thresholds = extractThresholds(p);
-
-  type Cand = { id: string; score: number; why: string };
-  const cands: Cand[] = [];
-
-  const bump = (id: string, score: number, why: string) => {
-    cands.push({ id, score, why });
-  };
-
-  if (
-    /\b(spend|costing|purchase).*\b(revenue|sales)\b|\brevenue\b.*\b(spend|cost)\b|\bspend vs\b|\bvs\.?\s*revenue\b/.test(
-      p,
-    )
-  ) {
-    bump("spend_vs_revenue_by_supplier", 10, "spend vs revenue");
-  }
-  if (
-    /\b(profit|margin).*\b(reliable|on[- ]?time|ship)\b|\breliable.*\b(profit|margin)\b|\b(thin|low).*\bmargin.*\b(ship|late|reliable)\b|\b(ship|late|reliable).*\b(thin|low).*\bmargin\b/.test(
-      p,
-    )
-  ) {
-    bump("profit_vs_reliability", 12, "profit vs reliability");
-  }
-  if (
-    /\bmargin\b/.test(p) &&
-    /\bsupplier/.test(p) &&
-    !/\bsku|product|variant\b/.test(p)
-  ) {
-    bump("margin_by_supplier", 9, "margin by supplier");
-  }
-  if (
-    /\b(costing me margin|thin(?:nest)? margins?|margin problem)\b/.test(p) &&
-    !/\b(ship|late|reliable|sku|product)\b/.test(p)
-  ) {
-    bump("margin_by_supplier", 10, "margin pressure");
-  }
-  if (
-    /\b(late|miss(?:es|ing)? ship|on[- ]?time|delivery reliability)\b/.test(p) &&
-    /\bsupplier/.test(p)
-  ) {
-    bump("late_suppliers", 9, "late suppliers");
-  }
-  if (/\b(where.*(spend|money)|spend by supplier|po spend)\b/.test(p)) {
-    bump("spend_by_supplier", 8, "spend by supplier");
-  }
-  if (/\b(sku|product).*\bmargin|\bmargin.*\b(sku|product)\b/.test(p)) {
-    bump("top_sku_margin", 9, "SKU margins");
-  }
-  if (/\bthinnest\b.*\bmargin|\blow(?:est)? margin\b/.test(p)) {
-    bump("top_sku_margin", 8, "thinnest margins");
-  }
-  if (
-    /\b(dead.?stock|excess inventory|not selling|slow.?mov|sitting (in|on) (stock|inventory)|what.?s not selling)\b/.test(
-      p,
-    )
-  ) {
-    bump("dead_stock", 11, "dead stock / not selling");
-  }
-  if (
-    /\b(cogs|cost of goods|real cogs|landed cogs|fifo|weighted average)\b/.test(
-      p,
-    )
-  ) {
-    bump("cogs_by_product", 12, "COGS by product/period");
-  }
-
-  if (!cands.length) return null;
-  cands.sort((a, b) => b.score - a.score);
-  const best = cands[0]!;
-  const meta = REPORT_TEMPLATES.find((t) => t.id === best.id)!;
-  const params = sanitizeParams(thresholds);
-  return {
-    templateId: best.id,
-    params,
-    confidence: best.score >= 9 ? "high" : "medium",
-    source: "heuristic",
-    explanation: `Matched “${meta.question}” (${best.why}).`,
-  };
-}
+export type { ReportPromptContext };
 
 async function classifyWithClaude(
   prompt: string,
+  previous?: ReportPromptContext | null,
 ): Promise<ReportPromptMatch | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
   if (!apiKey) return null;
 
-  const catalog = REPORT_TEMPLATES.map((t) => ({
+  const catalog = REPORT_TEMPLATE_DEFS.map((t) => ({
     id: t.id,
     question: t.question,
     blurb: t.blurb,
+    kind: t.kind,
+    supportsDate: t.supportsDate,
+    allowedParams: t.allowedParams,
+    allowedColumns: t.allowedColumns,
+    allowedSorts: t.allowedSorts,
   }));
 
   const controller = new AbortController();
@@ -177,18 +60,31 @@ async function classifyWithClaude(
       },
       body: JSON.stringify({
         model: CLAUDE_INSIGHT_MODEL,
-        max_tokens: 200,
-        system: `You map a merchant question to ONE Report Builder template.
+        max_tokens: 400,
+        system: `You map a merchant question to ONE Report Builder template + params.
 Rules:
-- Respond with JSON only: {"templateId":"...","params":{},"confidence":"high|medium|low"}
+- Respond with JSON only: {"templateId":"...","params":{},"confidence":"high|medium|low","reason":"..."}
 - templateId MUST be one of the catalog ids. Never invent ids.
-- params may only include: limit (1-50), min_margin_pct, max_margin_pct.
-- Never invent SQL, tables, or calculations. Mapping only.
-- If nothing fits, return {"templateId":null,"params":{},"confidence":"low"}`,
+- params may ONLY include keys listed on that template's allowedParams.
+- columns must be a comma-separated subset of allowedColumns. sorts must be from allowedSorts.
+- period may be this_quarter|last_quarter|last_30d|last_90d|this_year|last_year.
+- Never invent SQL, tables, columns, or calculations. Mapping only. Never do arithmetic.
+- If the question is a FOLLOW-UP on the previous report, keep the same templateId and only change params, unless they clearly ask a different catalog question.
+- If they ask for a field/metric the current template cannot produce (e.g. profit margin on a PO listing), return {"templateId":null,"params":{},"confidence":"low","reason":"...what is actually available..."}.
+- Do not switch templates to look more capable. Decline honestly.
+- If nothing fits, return {"templateId":null,"params":{},"confidence":"low","reason":"..."}`,
         messages: [
           {
             role: "user",
-            content: `Catalog:\n${JSON.stringify(catalog)}\n\nQuestion:\n${prompt}`,
+            content: `Catalog:\n${JSON.stringify(catalog)}\n\nPrevious mapping:\n${
+              previous
+                ? JSON.stringify({
+                    templateId: previous.templateId,
+                    params: previous.params,
+                    prompt: previous.prompt ?? null,
+                  })
+                : "none"
+            }\n\nQuestion:\n${prompt}`,
           },
         ],
       }),
@@ -206,22 +102,38 @@ Rules:
       templateId?: string | null;
       params?: Record<string, unknown>;
       confidence?: string;
+      reason?: string;
     };
-    if (!parsed.templateId || !TEMPLATE_IDS.has(parsed.templateId)) return null;
+    if (!parsed.templateId || !TEMPLATE_IDS.has(parsed.templateId)) {
+      return {
+        templateId: "",
+        params: previous?.params ?? {},
+        confidence: "low",
+        source: "claude",
+        declined: true,
+        explanation:
+          parsed.reason?.trim() || unmatchedExplanation(previous ?? null),
+      };
+    }
     const meta = REPORT_TEMPLATES.find((t) => t.id === parsed.templateId)!;
     const conf =
       parsed.confidence === "high" || parsed.confidence === "medium"
         ? parsed.confidence
         : "low";
+    const inherited =
+      previous && parsed.templateId === previous.templateId
+        ? previous.params
+        : {};
     return {
       templateId: parsed.templateId,
-      params: sanitizeParams({
-        ...extractThresholds(prompt),
+      params: sanitizeReportParams(parsed.templateId, {
+        ...inherited,
         ...(parsed.params ?? {}),
       }),
       confidence: conf,
       source: "claude",
-      explanation: `Mapped to “${meta.question}”.`,
+      explanation:
+        parsed.reason?.trim() || `Mapped to “${meta.question}”.`,
     };
   } catch {
     return null;
@@ -233,9 +145,11 @@ Rules:
 /**
  * Resolve a free-text prompt to an allowlisted template + params.
  * Prefer heuristics (fast); fall back to Haiku classification.
+ * Out-of-scope follow-ups decline without calling Claude (so it cannot guess).
  */
 export async function mapPromptToReportTemplate(
   promptRaw: string,
+  previous?: ReportPromptContext | null,
 ): Promise<ReportPromptMatch> {
   const timer = startTimer("report:mapPrompt");
   const prompt = promptRaw.trim().slice(0, 500);
@@ -250,24 +164,51 @@ export async function mapPromptToReportTemplate(
     };
   }
 
-  const heuristic = scoreHeuristic(prompt);
+  const heuristic = mapReportPromptHeuristic(prompt, previous);
+  if (heuristic?.declined) {
+    timer.end({ matched: false, declined: true });
+    return {
+      templateId: "",
+      params: previous?.params ?? {},
+      confidence: "low",
+      source: "none",
+      declined: true,
+      explanation: heuristic.explanation,
+    };
+  }
   if (heuristic && heuristic.confidence === "high") {
     timer.end({ matched: true, source: "heuristic" });
-    return heuristic;
+    return {
+      templateId: heuristic.templateId,
+      params: heuristic.params,
+      confidence: heuristic.confidence,
+      source: "heuristic",
+      explanation: heuristic.explanation,
+    };
   }
 
-  const claude = await classifyWithClaude(prompt);
-  if (claude && claude.confidence !== "low") {
+  const claude = await classifyWithClaude(prompt, previous);
+  if (claude?.declined) {
+    timer.end({ matched: false, declined: true, source: "claude" });
+    return claude;
+  }
+  if (claude && claude.templateId && claude.confidence !== "low") {
     timer.end({ matched: true, source: "claude" });
     return claude;
   }
 
-  if (heuristic) {
+  if (heuristic && heuristic.templateId) {
     timer.end({ matched: true, source: "heuristic_fallback" });
-    return heuristic;
+    return {
+      templateId: heuristic.templateId,
+      params: heuristic.params,
+      confidence: heuristic.confidence,
+      source: "heuristic",
+      explanation: heuristic.explanation,
+    };
   }
 
-  if (claude) {
+  if (claude?.templateId) {
     timer.end({ matched: true, source: "claude_low" });
     return claude;
   }
@@ -275,10 +216,14 @@ export async function mapPromptToReportTemplate(
   timer.end({ matched: false });
   return {
     templateId: "",
-    params: {},
+    params: previous?.params ?? {},
     confidence: "low",
     source: "none",
+    declined: Boolean(previous?.templateId),
     explanation:
-      "Couldn't match that to a built-in report. Try a starter card, or ask about margin, spend, revenue, or on-time shipping.",
+      claude?.explanation ||
+      (previous
+        ? `${unmatchedExplanation(previous)} ${availableFieldsHint(previous.templateId)}`
+        : unmatchedExplanation(null)),
   };
 }

@@ -1,5 +1,10 @@
 import { createServiceClient } from "./supabase.server";
 import { money, randomToken, relativeTime, shortDate } from "./format";
+import {
+  resolveListWindow,
+  sanitizeSearch,
+  type ListPageResult,
+} from "./list-table";
 import { currentLandedUnitCostAsOf, todayDateInputValue } from "./pricing";
 import type {
   NewPoFormData,
@@ -41,6 +46,7 @@ export type PurchaseOrderListItem = {
   requestedShipDateRaw: string | null;
   estimatedArrivalRaw: string | null;
   updated: string;
+  createdAtRaw: string | null;
 };
 
 export type PurchaseOrderDetail = {
@@ -141,13 +147,31 @@ function supplierName(value: unknown) {
 
 export async function listPurchaseOrders(
   workspaceId: string,
-  filters?: { status?: string | null; supplierId?: string | null },
-): Promise<PurchaseOrderListItem[]> {
+  filters?: {
+    status?: string | null;
+    supplierId?: string | null;
+    /** Matches PO number or supplier name. */
+    q?: string | null;
+    /** Supplier name only (report-builder drill-down). */
+    supplierQ?: string | null;
+    dateFrom?: string | null;
+    dateTo?: string | null;
+    page?: number;
+    pageSize?: number;
+    forExport?: boolean;
+    cap?: number;
+  },
+): Promise<ListPageResult<PurchaseOrderListItem>> {
   const supabase = createServiceClient();
+  const window = resolveListWindow(filters);
+  const q = sanitizeSearch(filters?.q);
+  const supplierQ = sanitizeSearch(filters?.supplierQ);
+
   let query = supabase
     .from("purchase_orders")
     .select(
-      "id, po_number, status, total, requested_ship_date, estimated_arrival_date, updated_at, supplier_id, suppliers(name)",
+      "id, po_number, status, total, requested_ship_date, estimated_arrival_date, updated_at, created_at, supplier_id, suppliers(name)",
+      { count: "exact" },
     )
     .eq("workspace_id", workspaceId)
     .order("created_at", { ascending: false });
@@ -158,11 +182,42 @@ export async function listPurchaseOrders(
   if (filters?.supplierId) {
     query = query.eq("supplier_id", filters.supplierId);
   }
+  if (filters?.dateFrom) {
+    query = query.gte("created_at", `${filters.dateFrom}T00:00:00.000Z`);
+  }
+  if (filters?.dateTo) {
+    const end = new Date(`${filters.dateTo}T00:00:00.000Z`);
+    end.setUTCDate(end.getUTCDate() + 1);
+    query = query.lt("created_at", end.toISOString());
+  }
+  if (supplierQ) {
+    const { data: named, error: nameErr } = await supabase
+      .from("suppliers")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .ilike("name", `%${supplierQ}%`);
+    if (nameErr) throw new Error(nameErr.message);
+    const supplierIds = (named ?? []).map((s) => s.id);
+    if (!supplierIds.length) return { rows: [], total: 0 };
+    query = query.in("supplier_id", supplierIds);
+  }
+  if (q) {
+    const { data: named, error: nameErr } = await supabase
+      .from("suppliers")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .ilike("name", `%${q}%`);
+    if (nameErr) throw new Error(nameErr.message);
+    const supplierIds = (named ?? []).map((s) => s.id);
+    query = supplierIds.length
+      ? query.or(`po_number.ilike.%${q}%,supplier_id.in.(${supplierIds.join(",")})`)
+      : query.ilike("po_number", `%${q}%`);
+  }
 
-  const { data, error } = await query;
+  const { data, error, count } = await query.range(window.from, window.to);
   if (error) throw new Error(error.message);
 
-  return (data ?? []).map((po) => {
+  const rows = (data ?? []).map((po) => {
     const status = po.status as PoStatus;
     return {
       id: po.id,
@@ -178,8 +233,10 @@ export async function listPurchaseOrders(
       requestedShipDateRaw: po.requested_ship_date,
       estimatedArrivalRaw: po.estimated_arrival_date,
       updated: relativeTime(po.updated_at),
+      createdAtRaw: (po.created_at as string | null) ?? null,
     };
   });
+  return { rows, total: count ?? rows.length };
 }
 
 export async function getPurchaseOrderDetail(

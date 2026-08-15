@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs } from "@remix-run/node";
-import { useLoaderData, useNavigate } from "@remix-run/react";
+import { useLoaderData, useNavigate, useSearchParams } from "@remix-run/react";
 import {
   Badge,
   BlockStack,
@@ -11,70 +11,101 @@ import {
   Text,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useState } from "react";
 import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
-import { downloadCsv, stampFilename, toCsv } from "../lib/csv";
+import {
+  indexTablePagination,
+  parseListPage,
+  parseListQuery,
+  patchListParams,
+} from "../lib/list-table";
 import { getMerchantContext } from "../lib/merchant.server";
-import { listSuppliers } from "../lib/suppliers.server";
+import { listSuppliersPage } from "../lib/suppliers.server";
+import { useFilteredCsvExport } from "../lib/use-filtered-csv-export";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: false });
-  const suppliers = await listSuppliers(merchant.workspace.id);
-  return { workspaceName: merchant.workspace.name, suppliers };
+  const url = new URL(request.url);
+  const q = parseListQuery(url.searchParams.get("q"));
+  const page = parseListPage(url.searchParams.get("page"));
+  const forExport = url.searchParams.get("export") === "1";
+  const result = await listSuppliersPage(merchant.workspace.id, {
+    q,
+    ...(forExport ? { forExport: true } : { page }),
+  });
+  return {
+    workspaceName: merchant.workspace.name,
+    suppliers: result.rows,
+    total: result.total,
+    q,
+    page,
+    exportRows: forExport ? result.rows : null,
+    exportToken: forExport ? Date.now() : null,
+  };
 };
 
 export default function SuppliersList() {
-  const { workspaceName, suppliers } = useLoaderData<typeof loader>();
+  const { workspaceName, suppliers, total, q, page } =
+    useLoaderData<typeof loader>();
   const navigate = useNavigate();
-  const [queryValue, setQueryValue] = useState("");
-
-  const filtered = useMemo(() => {
-    const q = queryValue.trim().toLowerCase();
-    if (!q) return suppliers;
-    return suppliers.filter((s) => {
-      const hay = `${s.name} ${s.email}`.toLowerCase();
-      return hay.includes(q);
-    });
-  }, [suppliers, queryValue]);
-
-  const exportCsv = useCallback(() => {
-    const csv = toCsv(
-      ["name", "email", "open_pos", "added"],
-      filtered.map((s) => [s.name, s.email, s.openOrders, s.createdAt]),
-    );
-    downloadCsv(stampFilename("suppliers"), csv);
-  }, [filtered]);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [queryValue, setQueryValue] = useState(q);
+  const applyParams = useCallback(
+    (patch: Record<string, string | null>) => {
+      setSearchParams(patchListParams(searchParams, patch));
+    },
+    [searchParams, setSearchParams],
+  );
+  const { exportCsv, exporting } = useFilteredCsvExport({
+    path: "/app/suppliers",
+    searchParams,
+    prefix: "suppliers",
+    headers: ["name", "email", "open_pos", "added"],
+    mapRow: (s: (typeof suppliers)[number]) => [
+      s.name,
+      s.email,
+      s.openOrders,
+      s.createdAt,
+    ],
+  });
 
   return (
     <Page
       title="Suppliers"
-      subtitle={`${workspaceName} · ${filtered.length} of ${suppliers.length} supplier${suppliers.length === 1 ? "" : "s"}`}
+      subtitle={`${workspaceName} · ${total} supplier${total === 1 ? "" : "s"}`}
       primaryAction={{ content: "Add supplier", url: "/app/suppliers/new" }}
       secondaryActions={[
         {
           content: "Export",
           onAction: exportCsv,
-          disabled: filtered.length === 0,
+          disabled: total === 0 || exporting,
         },
       ]}
     >
       <TitleBar title="Suppliers" />
       <BlockStack gap="400">
-        {suppliers.length > 0 ? (
+        {total > 0 || q ? (
           <Card padding="0">
             <Filters
               queryValue={queryValue}
               queryPlaceholder="Search by name or email"
               filters={[]}
               onQueryChange={setQueryValue}
-              onQueryClear={() => setQueryValue("")}
-              onClearAll={() => setQueryValue("")}
+              onQueryClear={() => {
+                setQueryValue("");
+                applyParams({ q: null });
+              }}
+              onQueryBlur={() => applyParams({ q: queryValue || null })}
+              onClearAll={() => {
+                setQueryValue("");
+                applyParams({ q: null });
+              }}
             />
           </Card>
         ) : null}
 
         <Card padding="0">
-          {suppliers.length === 0 ? (
+          {total === 0 && !q ? (
             <EmptyState
               heading="No suppliers yet"
               action={{ content: "Add supplier", url: "/app/suppliers/new" }}
@@ -82,7 +113,7 @@ export default function SuppliersList() {
             >
               <p>Add a supplier before creating purchase orders.</p>
             </EmptyState>
-          ) : filtered.length === 0 ? (
+          ) : suppliers.length === 0 ? (
             <EmptyState
               heading="No suppliers match"
               image={EMPTY_STATE_IMAGE.suppliers}
@@ -92,7 +123,7 @@ export default function SuppliersList() {
           ) : (
             <IndexTable
               resourceName={{ singular: "supplier", plural: "suppliers" }}
-              itemCount={filtered.length}
+              itemCount={suppliers.length}
               headings={[
                 { title: "Name" },
                 { title: "Email" },
@@ -100,8 +131,13 @@ export default function SuppliersList() {
                 { title: "Added" },
               ]}
               selectable={false}
+              pagination={indexTablePagination({
+                page,
+                total,
+                onPageChange: (next) => applyParams({ page: String(next) }),
+              })}
             >
-              {filtered.map((s, index) => (
+              {suppliers.map((s, index) => (
                 <IndexTable.Row
                   id={s.id}
                   key={s.id}

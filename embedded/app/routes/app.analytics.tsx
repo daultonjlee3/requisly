@@ -11,6 +11,7 @@ import {
   Card,
   DataTable,
   EmptyState,
+  Filters,
   InlineGrid,
   Page,
   Text,
@@ -22,7 +23,7 @@ import {
 } from "@shopify/polaris-icons";
 import { BarChart, LineChart } from "@shopify/polaris-viz";
 import { TitleBar } from "@shopify/app-bridge-react";
-import { useCallback } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { AiInsightsPanel } from "../components/AiInsightsPanel";
 import { SectionHeading } from "../components/SectionHeading";
 import {
@@ -32,7 +33,8 @@ import {
   workspaceIsInsightEligible,
 } from "../lib/ai-agents.server";
 import { loadAnalytics } from "../lib/analytics.server";
-import { downloadCsv, stampFilename, toCsv } from "../lib/csv";
+import { downloadListCsv } from "../lib/csv";
+import { indexTablePagination, LIST_PAGE_SIZE } from "../lib/list-table";
 import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
 import { getMerchantContext } from "../lib/merchant.server";
 import { resolveDemoWorkspaceId } from "../lib/onboarding.server";
@@ -118,13 +120,47 @@ export default function AnalyticsPage() {
     navigation.state !== "idle" &&
     navigation.formData?.get("intent") === "generate_insights";
 
+  const [tableQuery, setTableQuery] = useState("");
+  const [scorePage, setScorePage] = useState(1);
+  const [spendPage, setSpendPage] = useState(1);
+  const needle = tableQuery.trim().toLowerCase();
+
+  const filteredScorecards = useMemo(() => {
+    if (!needle) return analytics.scorecards;
+    return analytics.scorecards.filter((s) =>
+      s.supplierName.toLowerCase().includes(needle),
+    );
+  }, [analytics.scorecards, needle]);
+
+  const filteredSpend = useMemo(() => {
+    if (!needle) return analytics.spendBySupplier;
+    return analytics.spendBySupplier.filter((s) =>
+      s.supplierName.toLowerCase().includes(needle),
+    );
+  }, [analytics.spendBySupplier, needle]);
+
+  const scoreSlice = filteredScorecards.slice(
+    (scorePage - 1) * LIST_PAGE_SIZE,
+    scorePage * LIST_PAGE_SIZE,
+  );
+  const spendSlice = filteredSpend.slice(
+    (spendPage - 1) * LIST_PAGE_SIZE,
+    spendPage * LIST_PAGE_SIZE,
+  );
+
   const exportCsv = useCallback(() => {
     const rows: Array<Array<string | number | null>> = [
-      ...analytics.spendBySupplier.map((s) => [
-        "supplier",
+      ...filteredSpend.map((s) => [
+        "spend",
         s.supplierName,
         s.count,
         Number(s.totalRaw.toFixed(2)),
+      ]),
+      ...filteredScorecards.map((s) => [
+        "scorecard",
+        s.supplierName,
+        s.completedPos,
+        s.ready ? "ready" : "not_ready",
       ]),
       ...analytics.spendByMonthExport.map((m) => [
         "month",
@@ -133,9 +169,16 @@ export default function AnalyticsPage() {
         Number(m.spend.toFixed(2)),
       ]),
     ];
-    const csv = toCsv(["type", "name", "closed_pos", "spend"], rows);
-    downloadCsv(stampFilename("analytics-spend"), csv);
-  }, [analytics.spendBySupplier, analytics.spendByMonthExport]);
+    downloadListCsv(
+      "analytics",
+      ["type", "name", "closed_pos", "value"],
+      rows,
+    );
+  }, [
+    analytics.spendByMonthExport,
+    filteredScorecards,
+    filteredSpend,
+  ]);
 
   const spendSeries = [
     {
@@ -167,7 +210,8 @@ export default function AnalyticsPage() {
           onAction: exportCsv,
           disabled:
             analytics.loadError != null ||
-            (analytics.spendBySupplier.length === 0 &&
+            (filteredSpend.length === 0 &&
+              filteredScorecards.length === 0 &&
               analytics.spendByMonthExport.length === 0),
         },
       ]}
@@ -327,6 +371,29 @@ export default function AnalyticsPage() {
               </BlockStack>
             </Card>
 
+            <Card padding="0">
+              <Filters
+                queryValue={tableQuery}
+                queryPlaceholder="Filter tables by supplier"
+                filters={[]}
+                onQueryChange={(value) => {
+                  setTableQuery(value);
+                  setScorePage(1);
+                  setSpendPage(1);
+                }}
+                onQueryClear={() => {
+                  setTableQuery("");
+                  setScorePage(1);
+                  setSpendPage(1);
+                }}
+                onClearAll={() => {
+                  setTableQuery("");
+                  setScorePage(1);
+                  setSpendPage(1);
+                }}
+              />
+            </Card>
+
             <Card>
               <BlockStack gap="300">
                 <SectionHeading
@@ -334,7 +401,7 @@ export default function AnalyticsPage() {
                   icon={ChartVerticalIcon}
                   subtitle="Metrics unlock after 5 closed POs per supplier."
                 />
-                {analytics.scorecards.length === 0 ? (
+                {filteredScorecards.length === 0 ? (
                   <EmptyState
                     heading="No scorecard rows yet"
                     image={EMPTY_STATE_IMAGE.suppliers}
@@ -359,7 +426,7 @@ export default function AnalyticsPage() {
                       "Fill rate",
                       "Avg confirm",
                     ]}
-                    rows={analytics.scorecards.map((s) => [
+                    rows={scoreSlice.map((s) => [
                       s.supplierName,
                       String(s.completedPos),
                       s.ready ? "Yes" : "No",
@@ -367,6 +434,11 @@ export default function AnalyticsPage() {
                       s.fillRate,
                       s.avgConfirmDays,
                     ])}
+                    pagination={indexTablePagination({
+                      page: scorePage,
+                      total: filteredScorecards.length,
+                      onPageChange: setScorePage,
+                    })}
                   />
                 )}
               </BlockStack>
@@ -378,7 +450,7 @@ export default function AnalyticsPage() {
                   title="Closed PO spend by supplier"
                   icon={CashDollarIcon}
                 />
-                {analytics.spendBySupplier.length === 0 ? (
+                {filteredSpend.length === 0 ? (
                   <Text as="p" tone="subdued" variant="bodyMd">
                     No closed orders yet.
                   </Text>
@@ -386,11 +458,16 @@ export default function AnalyticsPage() {
                   <DataTable
                     columnContentTypes={["text", "numeric", "numeric"]}
                     headings={["Supplier", "Closed POs", "Spend"]}
-                    rows={analytics.spendBySupplier.map((s) => [
+                    rows={spendSlice.map((s) => [
                       s.supplierName,
                       String(s.count),
                       s.total,
                     ])}
+                    pagination={indexTablePagination({
+                      page: spendPage,
+                      total: filteredSpend.length,
+                      onPageChange: setSpendPage,
+                    })}
                   />
                 )}
               </BlockStack>

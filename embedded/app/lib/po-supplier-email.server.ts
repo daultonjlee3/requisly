@@ -126,7 +126,7 @@ export async function sendPoSupplierEmail(opts: {
 }): Promise<{ sent: boolean; error?: string }> {
   const resendKey = process.env.RESEND_API_KEY;
   const from =
-    process.env.RESEND_FROM_EMAIL || "Requisly <notifications@requisly.app>";
+    process.env.RESEND_FROM_EMAIL || "Requisly <orders@requisly.com>";
   if (!resendKey) {
     return { sent: false, error: "RESEND_API_KEY is not set" };
   }
