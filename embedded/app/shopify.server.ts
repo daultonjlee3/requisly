@@ -54,17 +54,95 @@ export const login = shopify.login;
 export const registerWebhooks = shopify.registerWebhooks;
 export const sessionStorage = shopify.sessionStorage;
 
+type GraphqlAdmin = {
+  graphql: (
+    query: string,
+    options?: { variables?: Record<string, unknown> },
+  ) => Promise<Response>;
+};
+
 /**
- * Test Billing API charges.
+ * Test Billing API charges from env.
  * Defaults to true outside production. Hard-refuses production so a stray
- * SHOPIFY_BILLING_TEST=true cannot create test charges or trip the
- * "continue without subscription" failure path in app.tsx.
+ * SHOPIFY_BILLING_TEST=true cannot create test charges on real merchants.
+ * Development / partner stores still use test charges via shopRequiresTestCharges().
  */
 export function billingIsTest() {
   if (isProductionRuntime()) return false;
   if (process.env.SHOPIFY_BILLING_TEST === "true") return true;
   if (process.env.SHOPIFY_BILLING_TEST === "false") return false;
   return true;
+}
+
+/**
+ * Partner development stores (and Shopify "Developer Preview" shops) cannot
+ * accept a live charge. Production Vercel must still use isTest: true for them,
+ * or billing.request throws "Error while billing the store" and the app shell 402s.
+ */
+export async function shopRequiresTestCharges(
+  admin: GraphqlAdmin,
+): Promise<boolean> {
+  try {
+    const res = await admin.graphql(
+      `#graphql
+      query RequislyShopBillingPlan {
+        shop {
+          plan {
+            partnerDevelopment
+            displayName
+          }
+        }
+      }`,
+    );
+    const json = (await res.json()) as {
+      data?: {
+        shop?: {
+          plan?: { partnerDevelopment?: boolean; displayName?: string };
+        };
+      };
+    };
+    const plan = json.data?.shop?.plan;
+    if (!plan) return false;
+    if (plan.partnerDevelopment) return true;
+    const name = (plan.displayName ?? "").toLowerCase();
+    return (
+      name === "developer preview" ||
+      name === "development" ||
+      name.includes("plus partner sandbox") ||
+      name.includes("partner sandbox")
+    );
+  } catch (err) {
+    console.error("[billing] shop plan lookup failed:", err);
+    return false;
+  }
+}
+
+/** Shopify's helper message is generic; userErrors live on errorData. */
+export function extractBillingError(err: unknown): string {
+  if (err && typeof err === "object") {
+    const rec = err as {
+      message?: string;
+      errorData?: unknown;
+      billingErrors?: unknown;
+    };
+    const raw = rec.errorData ?? rec.billingErrors;
+    const chunks: string[] = [];
+    if (Array.isArray(raw)) {
+      for (const item of raw) {
+        if (typeof item === "string") chunks.push(item);
+        else if (item && typeof item === "object" && "message" in item) {
+          chunks.push(String((item as { message: unknown }).message));
+        }
+      }
+    }
+    if (chunks.length) return chunks.join("; ");
+    if (rec.message) return rec.message;
+  }
+  return err instanceof Error ? err.message : "Error while billing the store";
+}
+
+export function isManagedPricingBlocked(detail: string): boolean {
+  return /managed pricing/i.test(detail);
 }
 
 /** True for Vercel production or NODE_ENV=production (non-preview). */

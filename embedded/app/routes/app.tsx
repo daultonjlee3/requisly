@@ -25,8 +25,11 @@ import {
   authenticate,
   billingIsTest,
   billingSkipAllowed,
+  extractBillingError,
+  isManagedPricingBlocked,
   isProductionRuntime,
   REQUISLY_PLAN,
+  shopRequiresTestCharges,
 } from "../shopify.server";
 
 export const links = () => [
@@ -35,8 +38,10 @@ export const links = () => [
 ];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { billing } = await authenticate.admin(request);
-  const isTest = billingIsTest();
+  const { admin, billing } = await authenticate.admin(request);
+  const developmentStore = await shopRequiresTestCharges(admin);
+  // Live charges fail on partner/dev stores even when Vercel is production.
+  const isTest = billingIsTest() || developmentStore;
   const skipBilling = billingSkipAllowed();
 
   let billingSkipped = false;
@@ -62,15 +67,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // Successful billing.request redirects via a thrown Response — rethrow.
       if (err instanceof Response) throw err;
 
-      // billing.request throws a generic message; keep cause for logs/UI.
-      const detail =
-        err instanceof Error ? err.message : "Error while billing the store";
-      console.error("[billing] require/request failed:", err);
+      const detail = extractBillingError(err);
+      console.error("[billing] require/request failed:", detail, err);
 
-      // Dev stores often can't complete Billing API charges (managed pricing
-      // lock-in, Plus-dev restrictions). Allow continuing local/preview QA when
-      // test billing is on — never in production (billingIsTest is hard-false there).
-      if (isTest && !isProductionRuntime()) {
+      if (isManagedPricingBlocked(detail)) {
+        // Partner Dashboard managed pricing owns the charge; Billing API cannot
+        // create one. Shopify already gated install — do not 402 the shell.
+      } else if (developmentStore || (isTest && !isProductionRuntime())) {
+        // Dev/preview stores (Plus sandbox, Developer Preview) can still reject
+        // even a test charge. Keep QA usable; production merchants still 402.
         billingSkipped = true;
         billingError = detail;
       } else {
