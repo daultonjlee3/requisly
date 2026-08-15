@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js";
+import { createAdminClient } from "@/lib/supabase/admin";
 
 const ALLOWED_RPCS = new Set([
   "supplier_link_confirm",
@@ -8,20 +8,17 @@ const ALLOWED_RPCS = new Set([
   "supplier_link_propose_changes",
 ]);
 
-function publicRpcClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL;
-  const key =
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ??
-    process.env.SUPABASE_ANON_KEY ??
-    process.env.SUPABASE_SERVICE_ROLE_KEY;
-
-  if (!url || !key) {
-    throw new Error("Supabase is not configured");
+function publicError(err: unknown): string {
+  const message = err instanceof Error ? err.message : "Could not open this link.";
+  if (
+    /supabase is not configured/i.test(message) ||
+    /missing next_public_supabase_url/i.test(message) ||
+    /supabase_service_role_key/i.test(message)
+  ) {
+    console.error("[supplier-link] missing Supabase env on this host:", message);
+    return "This link could not be opened right now.";
   }
-
-  return createClient(url, key, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  return message;
 }
 
 export async function openSupplierLink(token: string): Promise<{
@@ -29,17 +26,14 @@ export async function openSupplierLink(token: string): Promise<{
   error: string | null;
 }> {
   try {
-    const supabase = publicRpcClient();
+    const supabase = createAdminClient();
     const { data, error } = await supabase.rpc("supplier_link_open", {
       p_token: token,
     });
     if (error) return { data: null, error: error.message };
     return { data, error: null };
   } catch (err) {
-    return {
-      data: null,
-      error: err instanceof Error ? err.message : "Could not open this link.",
-    };
+    return { data: null, error: publicError(err) };
   }
 }
 
@@ -51,14 +45,11 @@ export async function runSupplierLinkRpc(
     return { data: null, error: "Unsupported action." };
   }
   try {
-    const supabase = publicRpcClient();
+    const supabase = createAdminClient();
     const { data, error } = await supabase.rpc(name, args);
     if (error) return { data: null, error: error.message };
     return { data, error: null };
   } catch (err) {
-    return {
-      data: null,
-      error: err instanceof Error ? err.message : "Action failed.",
-    };
+    return { data: null, error: publicError(err) };
   }
 }
