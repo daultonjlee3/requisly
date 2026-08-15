@@ -1,7 +1,7 @@
 import { createServiceClient } from "./supabase.server";
 import { money, relativeTime, shortDate } from "./format";
 import { statusBadgeTone, statusLabel, type PoStatus } from "./po-status";
-import { currentUnitCostAsOf, todayDateInputValue } from "./pricing";
+import { currentLandedUnitCostAsOf, todayDateInputValue } from "./pricing";
 
 export type SupplierListItem = {
   id: string;
@@ -165,7 +165,7 @@ export async function getSupplierDetail(
       supabase
         .from("supplier_products")
         .select(
-          "id, title, sku, case_qty, moq, product_variants(shopify_variant_id), supplier_product_prices(id, unit_cost, effective_date, created_at)",
+          "id, title, sku, case_qty, moq, product_variants(shopify_variant_id), supplier_product_prices(id, unit_cost, freight_per_unit, duty_per_unit, customs_per_unit, landed_unit_cost, effective_date, created_at)",
         )
         .eq("workspace_id", workspaceId)
         .eq("supplier_id", supplierId)
@@ -213,13 +213,17 @@ export async function getSupplierDetail(
       const prices = (p.supplier_product_prices ?? []) as Array<{
         id: string;
         unit_cost: number | string;
+        freight_per_unit?: number | string | null;
+        duty_per_unit?: number | string | null;
+        customs_per_unit?: number | string | null;
+        landed_unit_cost?: number | string | null;
         effective_date: string;
         created_at: string;
       }>;
       const variant = p.product_variants as unknown as {
         shopify_variant_id: string;
       } | null;
-      const cost = currentUnitCostAsOf(prices, asOf);
+      const cost = currentLandedUnitCostAsOf(prices, asOf);
       return {
         id: p.id,
         title: p.title,

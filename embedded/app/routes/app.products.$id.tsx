@@ -21,7 +21,7 @@ import {
   TextField,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { getMerchantContext } from "../lib/merchant.server";
 import {
   deleteSupplierProductPrice,
@@ -70,7 +70,21 @@ export default function ProductDetail() {
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const [unitCost, setUnitCost] = useState("");
+  const [freight, setFreight] = useState("");
+  const [duty, setDuty] = useState("");
+  const [customs, setCustoms] = useState("");
   const [effectiveDate, setEffectiveDate] = useState(todayDateInputValue());
+
+  const previewLanded = useMemo(() => {
+    const fob = Number(unitCost);
+    if (!Number.isFinite(fob) || unitCost.trim() === "") return null;
+    const parts = [freight, duty, customs].map((v) => {
+      if (!v.trim()) return 0;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    });
+    return fob + parts[0] + parts[1] + parts[2];
+  }, [unitCost, freight, duty, customs]);
 
   return (
     <Page
@@ -97,6 +111,10 @@ export default function ProductDetail() {
                 <Text as="h2" variant="headingMd">
                   Price schedule
                 </Text>
+                <Text as="p" tone="subdued" variant="bodySm">
+                  Unit cost is supplier/FOB. Landed adds per-unit freight, duty,
+                  and customs.
+                </Text>
                 {product.schedule.length === 0 ? (
                   <Text as="p" tone="subdued">
                     No prices yet. Schedule the first effective cost.
@@ -106,7 +124,11 @@ export default function ProductDetail() {
                     resourceName={{ singular: "price", plural: "prices" }}
                     itemCount={product.schedule.length}
                     headings={[
-                      { title: "Unit cost" },
+                      { title: "FOB" },
+                      { title: "Freight" },
+                      { title: "Duty" },
+                      { title: "Customs" },
+                      { title: "Landed" },
                       { title: "Effective" },
                       { title: "Status" },
                       { title: "" },
@@ -116,6 +138,14 @@ export default function ProductDetail() {
                     {product.schedule.map((row, index) => (
                       <IndexTable.Row id={row.id} key={row.id} position={index}>
                         <IndexTable.Cell>{row.unitCost}</IndexTable.Cell>
+                        <IndexTable.Cell>{row.freightPerUnit}</IndexTable.Cell>
+                        <IndexTable.Cell>{row.dutyPerUnit}</IndexTable.Cell>
+                        <IndexTable.Cell>{row.customsPerUnit}</IndexTable.Cell>
+                        <IndexTable.Cell>
+                          <Text as="span" fontWeight="semibold">
+                            {row.landedUnitCost}
+                          </Text>
+                        </IndexTable.Cell>
                         <IndexTable.Cell>{row.effectiveDate}</IndexTable.Cell>
                         <IndexTable.Cell>
                           <Badge
@@ -168,8 +198,12 @@ export default function ProductDetail() {
                     { term: "Supplier", description: product.supplierName },
                     { term: "SKU", description: product.sku || "—" },
                     {
-                      term: "Current cost",
+                      term: "Current FOB",
                       description: product.currentCost,
+                    },
+                    {
+                      term: "Current landed",
+                      description: product.currentLandedCost,
                     },
                     {
                       term: "Case qty",
@@ -191,6 +225,9 @@ export default function ProductDetail() {
                 <Form method="post">
                   <input type="hidden" name="intent" value="schedule" />
                   <input type="hidden" name="unit_cost" value={unitCost} />
+                  <input type="hidden" name="freight_per_unit" value={freight} />
+                  <input type="hidden" name="duty_per_unit" value={duty} />
+                  <input type="hidden" name="customs_per_unit" value={customs} />
                   <input
                     type="hidden"
                     name="effective_date"
@@ -202,14 +239,36 @@ export default function ProductDetail() {
                     </Text>
                     <Text as="p" tone="subdued" variant="bodySm">
                       Future dates stay scheduled until their effective date —
-                      current cost never jumps ahead.
+                      current cost never jumps ahead. Leave freight/duty/customs
+                      blank for FOB-only.
                     </Text>
                     <FormLayout>
                       <TextField
-                        label="Unit cost"
+                        label="Unit cost (FOB)"
                         type="number"
                         value={unitCost}
                         onChange={setUnitCost}
+                        autoComplete="off"
+                      />
+                      <TextField
+                        label="Freight / unit"
+                        type="number"
+                        value={freight}
+                        onChange={setFreight}
+                        autoComplete="off"
+                      />
+                      <TextField
+                        label="Duty / unit"
+                        type="number"
+                        value={duty}
+                        onChange={setDuty}
+                        autoComplete="off"
+                      />
+                      <TextField
+                        label="Customs / unit"
+                        type="number"
+                        value={customs}
+                        onChange={setCustoms}
                         autoComplete="off"
                       />
                       <TextField
@@ -220,6 +279,14 @@ export default function ProductDetail() {
                         autoComplete="off"
                       />
                     </FormLayout>
+                    {previewLanded != null ? (
+                      <Text as="p" variant="bodySm">
+                        Landed preview:{" "}
+                        <Text as="span" fontWeight="semibold">
+                          {previewLanded.toFixed(4)}
+                        </Text>
+                      </Text>
+                    ) : null}
                     <InlineStack align="end">
                       <Button
                         submit

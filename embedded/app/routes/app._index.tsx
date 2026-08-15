@@ -73,7 +73,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const [dashboard, gate, insights, pinnedReports] = await Promise.all([
     loadDashboard(merchant.workspace.id, { forceError }),
     workspaceIsInsightEligible(merchant.workspace.id),
-    listActiveInsights(merchant.workspace.id, 5),
+    listActiveInsights(merchant.workspace.id, 12),
     listPinnedReports(merchant.workspace.id, 5),
   ]);
 

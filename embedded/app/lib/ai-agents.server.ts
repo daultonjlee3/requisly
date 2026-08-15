@@ -1,8 +1,8 @@
 /**
  * Phase 3 in-lane agents (Operations / Supplier / Procurement / Margin /
- * Quality / Reorder / Documentation / Hygiene).
- * Facts come from synced PO, scorecard, pricing, receipts, and inventory data
- * only — no Orders API, no sales velocity, never auto-sends a PO.
+ * Quality / Reorder cadence / Inventory / Documentation / Hygiene).
+ * Facts come from synced PO, scorecard, pricing, receipts, inventory, and
+ * (Inventory Agent only) Orders-backed reorder_recommendations — never auto-sends a PO.
  *
  * Copy is narrated by Claude Haiku when ANTHROPIC_API_KEY is set; on any API
  * failure we fall back to the deterministic templates so insights still appear.
@@ -14,6 +14,7 @@ import {
 } from "./low-stock.server";
 import { createServiceClient } from "./supabase.server";
 import { createPurchaseOrder } from "./purchase-orders.server";
+import { listReorderRecommendations } from "./reorder.server";
 
 export const SCORECARD_MIN_COMPLETED_POS = 5;
 /** Workspace-level gate: enough closed history to speak in insights. */
@@ -46,6 +47,7 @@ export type AgentName =
   | "margin"
   | "quality"
   | "reorder"
+  | "inventory"
   | "documentation"
   | "hygiene"
   | "reports";
@@ -61,6 +63,7 @@ export type InsightType =
   | "margin_compression"
   | "quality_pattern"
   | "reorder_cadence"
+  | "reorder_recommendation"
   | "missing_documents"
   | "missing_documents_pattern"
   | "catalog_incomplete"
@@ -418,6 +421,42 @@ export function templateDraftPoSuggestion(opts: {
   };
 }
 
+/** Inventory Agent — reorder_recommendations → narrated insight (+ optional draft PO). */
+export function templateReorderRecommendation(opts: {
+  title: string;
+  onHand: number;
+  reorderPoint: number;
+  leadTimeDays: number | null;
+  leadTimeSource: "confirmed" | "fallback_estimate";
+  confirmedLeadPoCount: number;
+  velocityIsSyntheticTest: boolean;
+  supplierName: string | null;
+  poNumber: string | null;
+}) {
+  const rp = Math.round(opts.reorderPoint);
+  const lead =
+    opts.leadTimeDays == null
+      ? "unknown lead time"
+      : `${Math.round(opts.leadTimeDays)}-day`;
+  const leadClause =
+    opts.leadTimeSource === "confirmed"
+      ? `Based on ${opts.confirmedLeadPoCount} real confirmed order${opts.confirmedLeadPoCount === 1 ? "" : "s"}, actual lead time is ${lead.replace("-day", " days")} — order now.`
+      : `Based on an estimated ${lead} lead time (no confirmed order history yet).`;
+  const synthetic = opts.velocityIsSyntheticTest
+    ? " Velocity is from synthetic test orders — not real customer demand."
+    : "";
+  const draft =
+    opts.poNumber && opts.supplierName
+      ? ` Draft ${opts.poNumber} via ${opts.supplierName} (cheapest confirmed unit cost) — not sent.`
+      : "";
+  return {
+    summary: `${opts.title} is at ${opts.onHand} units, below your reorder point of ${rp}. ${leadClause}${synthetic}${draft}`.trim(),
+    body: opts.velocityIsSyntheticTest
+      ? "Synthetic-test velocity only — mechanism check. Do not treat as live demand."
+      : null,
+  };
+}
+
 export function templateMarginCompression(opts: {
   supplierLabel: string;
   title: string;
@@ -531,6 +570,29 @@ async function recentInsightForProduct(
     (row) =>
       (row.supporting_data as { supplier_product_id?: string })
         ?.supplier_product_id === supplierProductId,
+  );
+}
+
+async function recentInsightForVariant(
+  supabase: SupabaseClient,
+  workspaceId: string,
+  insightType: InsightType,
+  productVariantId: string,
+  withinHours: number,
+) {
+  const since = daysAgoISO(Math.ceil(withinHours / 24));
+  const { data } = await supabase
+    .from("ai_insights")
+    .select("id, supporting_data")
+    .eq("workspace_id", workspaceId)
+    .eq("insight_type", insightType)
+    .eq("dismissed", false)
+    .gte("generated_at", since)
+    .limit(60);
+  return (data ?? []).some(
+    (row) =>
+      (row.supporting_data as { product_variant_id?: string })
+        ?.product_variant_id === productVariantId,
   );
 }
 
@@ -2149,6 +2211,230 @@ export async function runOnboardingNudgeAgent(
   return [insightId];
 }
 
+/**
+ * Inventory Agent — reorder_recommendations where needs_reorder.
+ * Narrates confirmed vs fallback lead time + synthetic velocity flag.
+ * Creates a draft PO (cheapest confirmed supplier) — never auto-sends.
+ */
+export async function runInventoryAgent(
+  workspaceId: string,
+  opts?: { force?: boolean; supabase?: SupabaseClient; limit?: number },
+): Promise<string[]> {
+  const supabase = opts?.supabase ?? createServiceClient();
+  const gate = await workspaceIsInsightEligible(workspaceId, supabase);
+  if (!gate.eligible) return [];
+
+  const ids: string[] = [];
+  const today = todayUTC();
+  const limit = opts?.limit ?? 5;
+
+  const { rows } = await listReorderRecommendations(workspaceId);
+  const flagged = rows.filter((r) => r.needs_reorder).slice(0, limit);
+  if (!flagged.length) return [];
+
+  for (const rec of flagged) {
+    if (
+      !opts?.force &&
+      (await recentInsightForVariant(
+        supabase,
+        workspaceId,
+        "reorder_recommendation",
+        rec.product_variant_id,
+        48,
+      ))
+    ) {
+      continue;
+    }
+
+    // Cheapest confirmed supplier product linked to this variant.
+    const { data: linked } = await supabase
+      .from("supplier_products")
+      .select(
+        "id, title, sku, supplier_id, product_variant_id, case_qty, suppliers(name)",
+      )
+      .eq("workspace_id", workspaceId)
+      .eq("product_variant_id", rec.product_variant_id);
+
+    type LinePick = {
+      description: string;
+      sku: string;
+      qty: number;
+      unit_cost: number;
+      supplier_product_id: string;
+      supplier_id: string;
+      supplier_name: string;
+    };
+
+    let best: LinePick | null = null;
+    for (const sp of linked ?? []) {
+      const { data: priceRows } = await supabase
+        .from("supplier_product_prices")
+        .select("unit_cost, effective_date")
+        .eq("supplier_product_id", sp.id)
+        .lte("effective_date", today)
+        .order("effective_date", { ascending: false })
+        .limit(1);
+      const unit = Number(priceRows?.[0]?.unit_cost);
+      if (!Number.isFinite(unit)) continue;
+      const caseQty = Number(sp.case_qty) > 0 ? Number(sp.case_qty) : 1;
+      const shortfall = Math.max(
+        0,
+        Math.ceil(rec.reorder_point) - rec.on_hand,
+      );
+      const qty = Math.max(caseQty, shortfall || caseQty);
+      const pick: LinePick = {
+        description: sp.title || rec.title,
+        sku: sp.sku || rec.sku || "",
+        qty,
+        unit_cost: unit,
+        supplier_product_id: sp.id,
+        supplier_id: sp.supplier_id,
+        supplier_name:
+          (sp.suppliers as { name: string } | null)?.name ?? "Supplier",
+      };
+      if (!best || pick.unit_cost < best.unit_cost) best = pick;
+    }
+
+    let poId: string | null = null;
+    let poNumber: string | null = null;
+    let supplierId: string | null = null;
+    let supplierName: string | null = null;
+
+    if (best) {
+      const { data: inv } = await supabase
+        .from("inventory_levels")
+        .select("location_id, available")
+        .eq("workspace_id", workspaceId)
+        .eq("product_variant_id", rec.product_variant_id)
+        .order("available", { ascending: true })
+        .limit(1);
+      const locationId = (inv?.[0]?.location_id as string | null) ?? null;
+
+      const created = await createPurchaseOrder({
+        workspaceId,
+        supplierId: best.supplier_id,
+        locationId,
+        requestedShipDate: null,
+        notes:
+          "AI Inventory Agent draft from reorder point. Review quantities and pricing before sending — never auto-sent." +
+          (rec.velocity_is_synthetic_test
+            ? " Velocity used synthetic test orders (not real customer demand)."
+            : ""),
+        lines: [
+          {
+            description: best.description,
+            sku: best.sku,
+            qty: best.qty,
+            unit_cost: best.unit_cost,
+            is_free_text: false,
+            supplier_product_id: best.supplier_product_id,
+          },
+        ],
+        source: "ai_inventory_agent",
+      });
+      poId = created.id;
+      poNumber = created.poNumber;
+      supplierId = best.supplier_id;
+      supplierName = best.supplier_name;
+    }
+
+    const leadRounded =
+      rec.lead_time_days == null ? null : Math.round(rec.lead_time_days);
+    const fallback = templateReorderRecommendation({
+      title: rec.title,
+      onHand: rec.on_hand,
+      reorderPoint: rec.reorder_point,
+      leadTimeDays: rec.lead_time_days,
+      leadTimeSource: rec.lead_time_source,
+      confirmedLeadPoCount: rec.confirmed_lead_po_count,
+      velocityIsSyntheticTest: rec.velocity_is_synthetic_test,
+      supplierName,
+      poNumber,
+    });
+
+    const narrated = await narrateInsight({
+      insightType: "reorder_recommendation",
+      facts: {
+        product_title: rec.title,
+        sku: rec.sku,
+        on_hand: rec.on_hand,
+        units_per_day: Number(rec.units_per_day.toFixed(4)),
+        reorder_point: Number(rec.reorder_point.toFixed(2)),
+        lead_time_days: leadRounded,
+        lead_time_source: rec.lead_time_source,
+        confirmed_lead_po_count: rec.confirmed_lead_po_count,
+        velocity_is_synthetic_test: rec.velocity_is_synthetic_test,
+        synthetic_label: rec.velocity_is_synthetic_test
+          ? "Based on synthetic test orders — not real customer demand"
+          : null,
+        lead_time_plain:
+          rec.lead_time_source === "confirmed"
+            ? `Confirmed from ${rec.confirmed_lead_po_count} closed POs`
+            : "Fallback estimate — no confirmed order history yet",
+        supplier_name: supplierName,
+        po_number: poNumber,
+        unit_cost: best?.unit_cost ?? null,
+        suggested_qty: best?.qty ?? null,
+        auto_sent: false,
+        review_required: true,
+        body_hint: rec.velocity_is_synthetic_test
+          ? "Call out synthetic test velocity explicitly in summary."
+          : null,
+      },
+      fallback,
+    });
+
+    // Hard-append synthetic caveat if Claude omitted it.
+    let summary = narrated.summary;
+    if (
+      rec.velocity_is_synthetic_test &&
+      !/synthetic/i.test(summary)
+    ) {
+      summary = `${summary.replace(/\s+$/, "")} Velocity is from synthetic test orders — not real customer demand.`;
+    }
+
+    ids.push(
+      await insertInsight(supabase, {
+        workspace_id: workspaceId,
+        agent: "inventory",
+        insight_type: "reorder_recommendation",
+        supplier_id: supplierId,
+        po_id: poId,
+        summary,
+        body:
+          narrated.body ??
+          fallback.body ??
+          (rec.velocity_is_synthetic_test
+            ? "Synthetic-test velocity only — mechanism check. Do not treat as live demand."
+            : null),
+        supporting_data: {
+          product_variant_id: rec.product_variant_id,
+          reorder_setting_id: rec.reorder_setting_id,
+          on_hand: rec.on_hand,
+          units_per_day: rec.units_per_day,
+          reorder_point: rec.reorder_point,
+          lead_time_days: leadRounded,
+          lead_time_source: rec.lead_time_source,
+          confirmed_lead_po_count: rec.confirmed_lead_po_count,
+          velocity_is_synthetic_test: rec.velocity_is_synthetic_test,
+          supplier_product_id: best?.supplier_product_id ?? null,
+          suggested_qty: best?.qty ?? null,
+          unit_cost: best?.unit_cost ?? null,
+          po_id: poId,
+          po_number: poNumber,
+          ai_suggested: true,
+          auto_sent: false,
+          narration_source: narrated.source,
+          narration_error: narrated.error ?? null,
+          model: narrated.source === "claude" ? "claude-haiku-4-5" : null,
+        },
+      }),
+    );
+  }
+
+  return ids;
+}
+
 /** Run all in-lane agents for one workspace. */
 export async function runAllAgentsForWorkspace(
   workspaceId: string,
@@ -2181,6 +2467,7 @@ export async function runAllAgentsForWorkspace(
   const marginIds = await runMarginAgent(workspaceId, agentOpts);
   const qualityIds = await runQualityAgent(workspaceId, agentOpts);
   const reorderIds = await runReorderCadenceAgent(workspaceId, agentOpts);
+  const inventoryIds = await runInventoryAgent(workspaceId, agentOpts);
   const documentationIds = await runDocumentationAgent(workspaceId, agentOpts);
   const hygieneIds = await runDataHygieneAgent(workspaceId, agentOpts);
 
@@ -2192,6 +2479,7 @@ export async function runAllAgentsForWorkspace(
     ...marginIds,
     ...qualityIds,
     ...reorderIds,
+    ...inventoryIds,
     ...documentationIds,
     ...hygieneIds,
   ];

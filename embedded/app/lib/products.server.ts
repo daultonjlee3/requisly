@@ -1,6 +1,8 @@
 import { createServiceClient } from "./supabase.server";
 import { money, shortDate } from "./format";
 import {
+  computeLandedUnitCost,
+  currentLandedUnitCostAsOf,
   currentUnitCostAsOf,
   todayDateInputValue,
   type PriceScheduleRow,
@@ -25,6 +27,7 @@ export type CatalogProductRow = {
   sku: string;
   supplierId: string;
   supplierName: string;
+  /** Display: landed when components exist, else FOB. */
   unitCost: string;
   caseQty: string;
   moq: string;
@@ -47,10 +50,17 @@ export type ProductDetail = {
   supplierName: string;
   caseQty: number | null;
   moq: number | null;
+  /** FOB / supplier invoice current cost. */
   currentCost: string;
+  /** Landed current cost (FOB + freight + duty + customs). */
+  currentLandedCost: string;
   schedule: Array<{
     id: string;
     unitCost: string;
+    freightPerUnit: string;
+    dutyPerUnit: string;
+    customsPerUnit: string;
+    landedUnitCost: string;
     effectiveDate: string;
     status: "Current" | "Scheduled" | "Past";
   }>;
@@ -76,7 +86,7 @@ export async function listProductsWorkspace(workspaceId: string): Promise<{
     supabase
       .from("supplier_products")
       .select(
-        "id, title, sku, case_qty, moq, supplier_id, suppliers(name), supplier_product_prices(id, unit_cost, effective_date, created_at)",
+        "id, title, sku, case_qty, moq, supplier_id, suppliers(name), supplier_product_prices(id, unit_cost, freight_per_unit, duty_per_unit, customs_per_unit, landed_unit_cost, effective_date, created_at)",
       )
       .eq("workspace_id", workspaceId)
       .order("title"),
@@ -129,14 +139,16 @@ export async function listProductsWorkspace(workspaceId: string): Promise<{
     catalog: (catalog ?? []).map((row) => {
       const supplier = row.suppliers as unknown as { name: string } | null;
       const prices = (row.supplier_product_prices ?? []) as PriceScheduleRow[];
-      const cost = currentUnitCostAsOf(prices, asOf);
+      const fob = currentUnitCostAsOf(prices, asOf);
+      const landed = currentLandedUnitCostAsOf(prices, asOf);
+      const display = landed ?? fob;
       return {
         id: row.id,
         title: row.title,
         sku: row.sku || "—",
         supplierId: row.supplier_id,
         supplierName: supplier?.name ?? "—",
-        unitCost: cost != null ? money(cost) : "—",
+        unitCost: display != null ? money(display) : "—",
         caseQty: row.case_qty != null ? String(row.case_qty) : "—",
         moq: row.moq != null ? String(row.moq) : "—",
       };
@@ -170,13 +182,16 @@ export async function getSupplierProductDetail(
 
   const { data: prices, error: pErr } = await supabase
     .from("supplier_product_prices")
-    .select("id, unit_cost, effective_date, created_at")
+    .select(
+      "id, unit_cost, freight_per_unit, duty_per_unit, customs_per_unit, landed_unit_cost, effective_date, created_at",
+    )
     .eq("supplier_product_id", productId)
     .order("effective_date", { ascending: false });
   if (pErr) throw new Error(pErr.message);
 
   const scheduleRows = (prices ?? []) as PriceScheduleRow[];
-  const current = currentUnitCostAsOf(scheduleRows, asOf);
+  const currentFob = currentUnitCostAsOf(scheduleRows, asOf);
+  const currentLanded = currentLandedUnitCostAsOf(scheduleRows, asOf);
   const supplier = product.suppliers as unknown as {
     id: string;
     name: string;
@@ -200,14 +215,22 @@ export async function getSupplierProductDetail(
     supplierName: supplier?.name ?? "—",
     caseQty: product.case_qty,
     moq: product.moq,
-    currentCost: current != null ? money(current) : "—",
+    currentCost: currentFob != null ? money(currentFob) : "—",
+    currentLandedCost: currentLanded != null ? money(currentLanded) : "—",
     schedule: scheduleRows.map((row) => {
       let status: "Current" | "Scheduled" | "Past" = "Past";
       if (row.effective_date > asOf) status = "Scheduled";
       else if (row.id === currentId) status = "Current";
+      const freight = Number(row.freight_per_unit ?? 0);
+      const duty = Number(row.duty_per_unit ?? 0);
+      const customs = Number(row.customs_per_unit ?? 0);
       return {
         id: row.id,
         unitCost: money(row.unit_cost),
+        freightPerUnit: money(freight),
+        dutyPerUnit: money(duty),
+        customsPerUnit: money(customs),
+        landedUnitCost: money(computeLandedUnitCost(row)),
         effectiveDate: formatMedium(row.effective_date),
         status,
       };
@@ -410,6 +433,20 @@ export async function scheduleSupplierProductPrice(
     throw new Error("Effective date is required");
   }
 
+  function parseComponent(name: string): number {
+    const raw = String(formData.get(name) ?? "").trim();
+    if (!raw) return 0;
+    const n = Number(raw.replace(/[^0-9.-]/g, ""));
+    if (!Number.isFinite(n) || n < 0) {
+      throw new Error(`${name} must be a non-negative number`);
+    }
+    return n;
+  }
+
+  const freight_per_unit = parseComponent("freight_per_unit");
+  const duty_per_unit = parseComponent("duty_per_unit");
+  const customs_per_unit = parseComponent("customs_per_unit");
+
   const supabase = createServiceClient();
   const { data: product } = await supabase
     .from("supplier_products")
@@ -422,6 +459,9 @@ export async function scheduleSupplierProductPrice(
   const { error } = await supabase.from("supplier_product_prices").insert({
     supplier_product_id: product.id,
     unit_cost,
+    freight_per_unit,
+    duty_per_unit,
+    customs_per_unit,
     effective_date: effectiveRaw,
     created_by: null,
   });

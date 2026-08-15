@@ -21,6 +21,7 @@ const ALLOWED_PARAM_KEYS = new Set([
   "limit",
   "min_margin_pct",
   "max_margin_pct",
+  "zero_sales_only",
 ]);
 
 function sanitizeParams(
@@ -121,6 +122,20 @@ function scoreHeuristic(prompt: string): ReportPromptMatch | null {
   }
   if (/\bthinnest\b.*\bmargin|\blow(?:est)? margin\b/.test(p)) {
     bump("top_sku_margin", 8, "thinnest margins");
+  }
+  if (
+    /\b(dead.?stock|excess inventory|not selling|slow.?mov|sitting (in|on) (stock|inventory)|what.?s not selling)\b/.test(
+      p,
+    )
+  ) {
+    bump("dead_stock", 11, "dead stock / not selling");
+  }
+  if (
+    /\b(cogs|cost of goods|real cogs|landed cogs|fifo|weighted average)\b/.test(
+      p,
+    )
+  ) {
+    bump("cogs_by_product", 12, "COGS by product/period");
   }
 
   if (!cands.length) return null;

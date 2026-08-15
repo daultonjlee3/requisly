@@ -24,6 +24,12 @@ Rules (non-negotiable):
 - Tone: direct, operational, calm — like a procurement ops note, not marketing.
 - Do not mention that you are an AI, Claude, or a language model.
 - For draft_po_suggestion: stress that the draft was NOT sent and needs merchant review.
+- For reorder_recommendation:
+  - State on-hand vs reorder_point plainly.
+  - If lead_time_source is "confirmed", say it is based on real confirmed closed orders (cite confirmed_lead_po_count and lead_time_days).
+  - If lead_time_source is "fallback_estimate", say cautiously that lead time is an estimate with no confirmed order history yet.
+  - If velocity_is_synthetic_test is true, you MUST visibly say velocity/demand is from synthetic test orders (not real customer demand).
+  - If a draft PO was created, stress it was NOT sent.
 - Respond with JSON only, no markdown fences: {"summary":"...","body":null_or_string}
 - "summary" is 1–2 sentences max (digest summary may be slightly longer).
 - "body" is optional detail (digest: multi-line plain text; others: null unless Facts include a body_hint).`;

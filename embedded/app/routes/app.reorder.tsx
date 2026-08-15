@@ -1,10 +1,11 @@
-import type { LoaderFunctionArgs } from "@remix-run/node";
-import { useLoaderData } from "@remix-run/react";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
+import { Form, useLoaderData, useNavigation } from "@remix-run/react";
 import {
   Badge,
   Banner,
   BlockStack,
   Box,
+  Button,
   Card,
   IndexTable,
   InlineStack,
@@ -14,16 +15,54 @@ import {
 import { InventoryIcon } from "@shopify/polaris-icons";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { SectionHeading } from "../components/SectionHeading";
+import {
+  dismissInsight,
+  listActiveInsights,
+  runInventoryAgent,
+  workspaceIsInsightEligible,
+} from "../lib/ai-agents.server";
 import { getMerchantContext } from "../lib/merchant.server";
 import { listReorderRecommendations } from "../lib/reorder.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: false });
-  const recs = await listReorderRecommendations(merchant.workspace.id);
+  const [recs, insights, gate] = await Promise.all([
+    listReorderRecommendations(merchant.workspace.id),
+    listActiveInsights(merchant.workspace.id, 40),
+    workspaceIsInsightEligible(merchant.workspace.id),
+  ]);
+  const inventoryInsights = insights.filter(
+    (i) =>
+      i.agent === "inventory" && i.insight_type === "reorder_recommendation",
+  );
   return {
     workspaceName: merchant.workspace.name,
+    eligible: gate.eligible,
+    gateReason: gate.reason ?? null,
+    inventoryInsights,
     ...recs,
   };
+};
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const merchant = await getMerchantContext(request, { sync: false });
+  const form = await request.formData();
+  const intent = String(form.get("intent") ?? "");
+
+  if (intent === "dismiss_insight") {
+    const insightId = String(form.get("insightId") ?? "");
+    if (insightId) await dismissInsight(merchant.workspace.id, insightId);
+    return { ok: true };
+  }
+
+  if (intent === "run_inventory_agent") {
+    const ids = await runInventoryAgent(merchant.workspace.id, {
+      force: true,
+    });
+    return { ok: true, created: ids.length };
+  }
+
+  return { ok: false };
 };
 
 function fmt(n: number, digits = 1) {
@@ -31,8 +70,19 @@ function fmt(n: number, digits = 1) {
 }
 
 export default function ReorderPage() {
-  const { workspaceName, rows, anySyntheticVelocity, needsReorderCount } =
-    useLoaderData<typeof loader>();
+  const {
+    workspaceName,
+    rows,
+    anySyntheticVelocity,
+    needsReorderCount,
+    inventoryInsights,
+    eligible,
+    gateReason,
+  } = useLoaderData<typeof loader>();
+  const navigation = useNavigation();
+  const running =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("intent") === "run_inventory_agent";
 
   return (
     <Page
@@ -42,7 +92,26 @@ export default function ReorderPage() {
     >
       <TitleBar title="Reorder" />
       <BlockStack gap="500">
-        <SectionHeading icon={InventoryIcon} title="What to reorder" />
+        <InlineStack align="space-between" blockAlign="center">
+          <SectionHeading icon={InventoryIcon} title="What to reorder" />
+          {eligible ? (
+            <Form method="post">
+              <input type="hidden" name="intent" value="run_inventory_agent" />
+              <Button submit loading={running}>
+                Run Inventory Agent
+              </Button>
+            </Form>
+          ) : null}
+        </InlineStack>
+
+        {!eligible ? (
+          <Banner tone="info" title="Inventory Agent locked">
+            <p>
+              {gateReason ||
+                "Insights unlock after 5 closed purchase orders in this workspace."}
+            </p>
+          </Banner>
+        ) : null}
 
         {anySyntheticVelocity ? (
           <Banner tone="warning" title="Synthetic test velocity — mechanism check only">
@@ -63,9 +132,80 @@ export default function ReorderPage() {
             from closed-PO timeline (sent → shipped) when history exists;
             otherwise it shows as an explicit{" "}
             <Text as="span" fontWeight="semibold">fallback estimate</Text> — never
-            silently blended.
+            silently blended. Inventory Agent drafts never auto-send.
           </p>
         </Banner>
+
+        {inventoryInsights.length > 0 ? (
+          <Card>
+            <BlockStack gap="300">
+              <InlineStack gap="200" blockAlign="center">
+                <Text as="h2" variant="headingSm">
+                  Inventory Agent insights
+                </Text>
+                <Badge tone="attention">Grouped separately from other agents</Badge>
+              </InlineStack>
+              {inventoryInsights.map((insight) => {
+                const synthetic = Boolean(
+                  (
+                    insight.supporting_data as {
+                      velocity_is_synthetic_test?: boolean;
+                    }
+                  )?.velocity_is_synthetic_test,
+                );
+                const leadSource = (
+                  insight.supporting_data as { lead_time_source?: string }
+                )?.lead_time_source;
+                return (
+                  <BlockStack key={insight.id} gap="200">
+                    <InlineStack gap="200" wrap>
+                      <Badge tone="attention">Inventory</Badge>
+                      {synthetic ? (
+                        <Badge tone="warning">Synthetic velocity</Badge>
+                      ) : null}
+                      {leadSource === "confirmed" ? (
+                        <Badge tone="success">Confirmed lead time</Badge>
+                      ) : null}
+                      {leadSource === "fallback_estimate" ? (
+                        <Badge tone="attention">Fallback lead time</Badge>
+                      ) : null}
+                    </InlineStack>
+                    <Text as="p" variant="bodyMd" fontWeight="semibold">
+                      {insight.summary}
+                    </Text>
+                    {insight.body ? (
+                      <Text as="p" tone="subdued">
+                        {insight.body}
+                      </Text>
+                    ) : null}
+                    <InlineStack gap="200">
+                      {insight.po_id ? (
+                        <Button url={`/app/purchase-orders/${insight.po_id}`}>
+                          Review draft PO
+                        </Button>
+                      ) : null}
+                      <Form method="post">
+                        <input
+                          type="hidden"
+                          name="intent"
+                          value="dismiss_insight"
+                        />
+                        <input
+                          type="hidden"
+                          name="insightId"
+                          value={insight.id}
+                        />
+                        <Button submit variant="plain" tone="critical">
+                          Dismiss
+                        </Button>
+                      </Form>
+                    </InlineStack>
+                  </BlockStack>
+                );
+              })}
+            </BlockStack>
+          </Card>
+        ) : null}
 
         <Card padding="0">
           {rows.length === 0 ? (

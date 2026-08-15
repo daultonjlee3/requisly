@@ -171,6 +171,18 @@ Build make-to-stock before make-to-order (simpler, no sales-order linkage needed
 
 Freight, duty, customs allocated into per-unit cost — relevant to both a reseller importing finished goods and a manufacturer importing raw materials. Extends `supplier_product_prices` rather than requiring a new object.
 
+## 7b. COGS calculator (after landed cost)
+
+Merchant-chosen costing method in Settings: **Weighted Average** (default) or **FIFO**.
+
+- **Weighted Average:** average unit cost across supplier price history in effect during the period (uses landed when present).
+- **FIFO:** consume `receipt_line_items` chronologically as cost layers (qty × price × date); track remaining qty per layer as sales/MOs consume stock.
+- **Resale:** COGS = cost(method) × units sold (Orders).
+- **Manufactured:** COGS = raw-material cost from completed Manufacturing Orders, costing ingredients with the same method.
+- **Not** auto-reconciled with QuickBooks — label clearly as Requisly's COGS; settings note on matching QBO/Desktop methods; account-level QB mapping (when shipped) keeps Requisly as sole COGS source of truth.
+- **Out of scope:** specific identification / lot-level exact costing.
+- Surfaces: Report Builder template + Analytics card titled `COGS (FIFO)` / `COGS (Weighted Average)`.
+
 ## 8. Dead-stock / excess-inventory report
 
 Cheapest addition — reuses report builder infrastructure directly once Orders/consumption data exists.
@@ -189,6 +201,7 @@ Cheapest addition — reuses report builder infrastructure directly once Orders/
 8. **One additional sales channel** (Amazon first) — Section 4, substantial, isolated effort.
 9. **Advanced warehouse management** (Section 5) — lowest priority, most operationally complex.
 10. **Landed cost tracking** (Section 7) — can slot in earlier or later depending on how many real users import internationally.
+11. **COGS calculator** (Section 7b) — after landed cost; Weighted Average / FIFO; report + Analytics card.
 
 **Honest sequencing note:** items 4 (manufacturing) and 8 (multi-channel) each represent more net-new engineering surface than everything built in this entire conversation to date, combined. This is a multi-month roadmap, not a near-term backlog.
 

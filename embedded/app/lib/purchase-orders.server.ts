@@ -1,6 +1,6 @@
 import { createServiceClient } from "./supabase.server";
 import { money, randomToken, relativeTime, shortDate } from "./format";
-import { currentUnitCostAsOf, todayDateInputValue } from "./pricing";
+import { currentLandedUnitCostAsOf, todayDateInputValue } from "./pricing";
 import type {
   NewPoFormData,
   NewPoShopifyVariant,
@@ -423,7 +423,7 @@ export async function loadNewPoFormData(
     supabase
       .from("supplier_products")
       .select(
-        "id, supplier_id, title, sku, product_variant_id, product_variants(shopify_variant_id), supplier_product_prices(id, unit_cost, effective_date, created_at)",
+        "id, supplier_id, title, sku, product_variant_id, product_variants(shopify_variant_id), supplier_product_prices(id, unit_cost, freight_per_unit, duty_per_unit, customs_per_unit, landed_unit_cost, effective_date, created_at)",
       )
       .eq("workspace_id", workspaceId)
       .order("title"),
@@ -441,6 +441,10 @@ export async function loadNewPoFormData(
     const prices = (row.supplier_product_prices ?? []) as Array<{
       id: string;
       unit_cost: number | string;
+      freight_per_unit?: number | string | null;
+      duty_per_unit?: number | string | null;
+      customs_per_unit?: number | string | null;
+      landed_unit_cost?: number | string | null;
       effective_date: string;
       created_at: string;
     }>;
@@ -452,7 +456,8 @@ export async function loadNewPoFormData(
       supplierId: row.supplier_id,
       title: row.title,
       sku: row.sku,
-      unitCost: currentUnitCostAsOf(prices, asOf),
+      // Prefer landed so new POs reflect true import cost when components exist.
+      unitCost: currentLandedUnitCostAsOf(prices, asOf),
       productVariantId: row.product_variant_id,
       shopifyVariantId: variant?.shopify_variant_id ?? null,
     };

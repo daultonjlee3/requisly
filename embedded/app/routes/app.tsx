@@ -102,16 +102,20 @@ export default function App() {
             Today's Work
           </Link>
           <Link to="/app/purchase-orders">Purchase orders</Link>
+          <Link to="/app/quote-requests">Quote requests</Link>
           <Link to="/app/purchase-orders/new">New PO</Link>
           <Link to="/app/templates">Templates</Link>
           <Link to="/app/suppliers">Suppliers</Link>
           <Link to="/app/products">Products</Link>
           <Link to="/app/reorder">Reorder</Link>
+          <Link to="/app/manufacturing">Manufacturing</Link>
+          <Link to="/app/warehouse">Warehouse</Link>
           <Link to="/app/calendar">Calendar</Link>
           <Link to="/app/analytics">Analytics</Link>
           <Link to="/app/reports">Report Builder</Link>
           <Link to="/app/settings/team">Team</Link>
           <Link to="/app/settings/notifications">Notifications</Link>
+          <Link to="/app/settings/cogs">COGS</Link>
         </NavMenu>
         {billingSkipped ? (
           <Box padding="400" paddingBlockEnd="0">

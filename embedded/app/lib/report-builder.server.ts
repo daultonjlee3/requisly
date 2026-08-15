@@ -4,6 +4,7 @@
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { narrateInsight } from "./ai-narration.server";
+import { computeCogsReport } from "./cogs.server";
 import { createServiceClient } from "./supabase.server";
 import { startTimer } from "./timing.server";
 import { todayDateInputValue } from "./pricing";
@@ -115,6 +116,24 @@ export const REPORT_TEMPLATES: ReportTemplateMeta[] = [
     chartHint: "bar",
     needsOrders: false,
   },
+  {
+    id: "dead_stock",
+    question: "What's not selling?",
+    blurb:
+      "On-hand inventory with little or no recent order velocity (dead / excess stock).",
+    starter: true,
+    chartHint: "bar",
+    needsOrders: true,
+  },
+  {
+    id: "cogs_by_product",
+    question: "What's my real COGS by product/supplier/period?",
+    blurb:
+      "Requisly COGS from real purchase price history — Weighted Average or FIFO (Settings).",
+    starter: true,
+    chartHint: "bar",
+    needsOrders: true,
+  },
 ];
 
 function money(n: number) {
@@ -135,7 +154,9 @@ async function currentCostMap(
   if (!supplierProductIds.length) return map;
   const { data, error } = await supabase
     .from("supplier_product_prices")
-    .select("supplier_product_id, unit_cost, effective_date")
+    .select(
+      "supplier_product_id, unit_cost, freight_per_unit, duty_per_unit, customs_per_unit, landed_unit_cost, effective_date",
+    )
     .in("supplier_product_id", supplierProductIds)
     .lte("effective_date", asOf)
     .order("effective_date", { ascending: false });
@@ -143,7 +164,11 @@ async function currentCostMap(
   for (const row of data ?? []) {
     const id = row.supplier_product_id as string;
     if (map.has(id)) continue;
-    map.set(id, Number(row.unit_cost));
+    const landed = Number(row.landed_unit_cost);
+    map.set(
+      id,
+      Number.isFinite(landed) ? landed : Number(row.unit_cost),
+    );
   }
   return map;
 }
@@ -838,6 +863,371 @@ async function computeTopSkuMargin(
   };
 }
 
+/**
+ * Dead / excess stock — on-hand with little or no recent order velocity.
+ * Uses inventory_levels + product_consumption_summary (Orders-backed).
+ */
+async function computeDeadStock(
+  workspaceId: string,
+  params: Record<string, string | number | boolean>,
+  supabase: SupabaseClient,
+) {
+  const lookbackDays = 30;
+  const since = new Date();
+  since.setUTCDate(since.getUTCDate() - lookbackDays);
+  const sinceDate = since.toISOString().slice(0, 10);
+
+  const { data: levels, error: levErr } = await supabase
+    .from("inventory_levels")
+    .select("product_variant_id, on_hand")
+    .eq("workspace_id", workspaceId)
+    .gt("on_hand", 0);
+  if (levErr) throw new Error(levErr.message);
+
+  const onHandByVariant = new Map<string, number>();
+  for (const row of levels ?? []) {
+    const id = row.product_variant_id as string;
+    onHandByVariant.set(
+      id,
+      (onHandByVariant.get(id) ?? 0) + Number(row.on_hand ?? 0),
+    );
+  }
+
+  const variantIds = [...onHandByVariant.keys()];
+  if (!variantIds.length) {
+    return {
+      title: "What's not selling",
+      columns: [
+        "product",
+        "sku",
+        "on_hand",
+        "units_30d",
+        "units_per_day",
+        "days_of_cover",
+        "velocity_note",
+      ],
+      rows: [] as Array<Array<string | number | null>>,
+      chart: null,
+      records: [] as Array<Record<string, string | number | null>>,
+      fallback: {
+        summary: "No on-hand inventory to evaluate.",
+        body: null,
+      },
+      followUps: [] as ReportFollowUp[],
+      emptyReason: "Sync catalog/inventory so on-hand quantities are available.",
+    };
+  }
+
+  const { data: consumption, error: cErr } = await supabase
+    .from("product_consumption_summary")
+    .select(
+      "product_variant_id, period_date, units_per_day, includes_synthetic_test",
+    )
+    .eq("workspace_id", workspaceId)
+    .in("product_variant_id", variantIds)
+    .gte("period_date", sinceDate);
+  if (cErr) throw new Error(cErr.message);
+
+  const units30 = new Map<string, number>();
+  const syntheticBy = new Map<string, boolean>();
+  for (const row of consumption ?? []) {
+    const id = row.product_variant_id as string;
+    units30.set(
+      id,
+      (units30.get(id) ?? 0) + Number(row.units_per_day ?? 0),
+    );
+    if (row.includes_synthetic_test) syntheticBy.set(id, true);
+  }
+
+  const { data: variants, error: vErr } = await supabase
+    .from("product_variants")
+    .select("id, title, sku")
+    .eq("workspace_id", workspaceId)
+    .in("id", variantIds);
+  if (vErr) throw new Error(vErr.message);
+
+  type DeadRow = {
+    product: string;
+    sku: string;
+    on_hand: number;
+    units_30d: number;
+    units_per_day: number;
+    days_of_cover: number | null;
+    velocity_note: string;
+    sort_key: number;
+  };
+
+  let records: DeadRow[] = (variants ?? []).map((v) => {
+    const id = v.id as string;
+    const onHand = onHandByVariant.get(id) ?? 0;
+    const u30 = units30.get(id) ?? 0;
+    const perDay = u30 / lookbackDays;
+    const daysOfCover =
+      perDay > 0 ? Math.round((onHand / perDay) * 10) / 10 : null;
+    const synthetic = syntheticBy.get(id) === true;
+    // Prefer zero-sales stock, then highest days-of-cover.
+    const sortKey =
+      u30 <= 0 ? 1_000_000 + onHand : daysOfCover ?? onHand;
+    return {
+      product: v.title as string,
+      sku: (v.sku as string | null) ?? "",
+      on_hand: onHand,
+      units_30d: Math.round(u30 * 100) / 100,
+      units_per_day: Math.round(perDay * 1000) / 1000,
+      days_of_cover: daysOfCover,
+      velocity_note: synthetic
+        ? "Synthetic test velocity"
+        : u30 <= 0
+          ? "No sales in 30d"
+          : "Live velocity",
+      sort_key: sortKey,
+    };
+  });
+
+  // Dead / excess: zero sales OR >90 days of cover at recent velocity
+  const zeroOnly = params.zero_sales_only === true || params.zero_sales_only === "true";
+  records = records.filter((r) => {
+    if (zeroOnly) return r.units_30d <= 0;
+    return r.units_30d <= 0 || (r.days_of_cover != null && r.days_of_cover >= 90);
+  });
+  records.sort((a, b) => b.sort_key - a.sort_key);
+
+  const limit =
+    params.limit != null ? Number(params.limit) : 20;
+  records = records.slice(0, limit);
+
+  const anySynthetic = records.some((r) =>
+    r.velocity_note.toLowerCase().includes("synthetic"),
+  );
+  const top = records[0];
+  const zeroCount = records.filter((r) => r.units_30d <= 0).length;
+
+  return {
+    title: "What's not selling",
+    columns: [
+      "product",
+      "sku",
+      "on_hand",
+      "units_30d",
+      "units_per_day",
+      "days_of_cover",
+      "velocity_note",
+    ],
+    rows: records.map((r) => [
+      r.product,
+      r.sku,
+      r.on_hand,
+      r.units_30d,
+      r.units_per_day,
+      r.days_of_cover,
+      r.velocity_note,
+    ]),
+    chart: records.length
+      ? ({
+          type: "bar",
+          title: "On-hand among slow movers",
+          series: [
+            {
+              name: "On hand",
+              data: records.slice(0, 12).map((r) => ({
+                key: (r.sku || r.product).slice(0, 22),
+                value: r.on_hand,
+              })),
+            },
+          ],
+        } satisfies ReportChartSpec)
+      : null,
+    records,
+    fallback: {
+      summary: top
+        ? zeroCount === records.length
+          ? `${records.length} SKU(s) have on-hand stock with no sales in the last ${lookbackDays} days` +
+            (anySynthetic
+              ? " (some velocity flags are synthetic test orders)."
+              : ".")
+          : `${top.product} has ${top.on_hand} on hand` +
+            (top.days_of_cover != null
+              ? ` (~${top.days_of_cover} days of cover)`
+              : " with no recent sales") +
+            (anySynthetic
+              ? " — velocity includes synthetic test orders."
+              : ".")
+        : `No slow movers found (on-hand with zero sales or ≥90 days of cover over ${lookbackDays}d).`,
+      body: anySynthetic
+        ? "Synthetic-test velocity is labeled in velocity_note — do not treat as live customer demand."
+        : null,
+    },
+    followUps: [
+      {
+        id: "top_20",
+        label: "Top 20 slow movers",
+        templateId: "dead_stock",
+        params: { limit: 20 },
+      },
+      {
+        id: "zero_only",
+        label: "Only zero sales with stock",
+        templateId: "dead_stock",
+        params: { limit: 30, zero_sales_only: true },
+      },
+    ] satisfies ReportFollowUp[],
+    emptyReason: records.length
+      ? undefined
+      : "Sync Shopify Orders and inventory, or no SKUs match dead/excess criteria yet.",
+  };
+}
+
+/**
+ * Real COGS by product for a period — uses workspace costing method
+ * (Weighted Average or FIFO). Manufactured SKUs use MO raw-material cost.
+ */
+async function computeCogsByProduct(
+  workspaceId: string,
+  params: Record<string, string | number | boolean>,
+  supabase: SupabaseClient,
+) {
+  const lookbackDays = Number(params.lookback_days ?? params.days ?? 30) || 30;
+  const groupBy =
+    String(params.group_by ?? "product") === "supplier" ? "supplier" : "product";
+
+  const report = await computeCogsReport(workspaceId, {
+    lookbackDays,
+    supabase,
+  });
+
+  type Row = {
+    product: string;
+    sku: string;
+    kind: string;
+    supplier: string;
+    units: number;
+    avg_unit_cost: number | null;
+    cogs: number;
+    cost_source: string;
+  };
+
+  let records: Row[] = report.lines.map((l) => ({
+    product: l.title,
+    sku: l.sku ?? "—",
+    kind: l.kind,
+    supplier: l.supplierName ?? "—",
+    units: l.units,
+    avg_unit_cost: l.avgUnitCost,
+    cogs: l.cogs,
+    cost_source: l.costSource,
+  }));
+
+  if (groupBy === "supplier") {
+    const bySup = new Map<
+      string,
+      { supplier: string; units: number; cogs: number }
+    >();
+    for (const r of records) {
+      const key = r.supplier;
+      const cur = bySup.get(key) ?? { supplier: key, units: 0, cogs: 0 };
+      cur.units += r.units;
+      cur.cogs += r.cogs;
+      bySup.set(key, cur);
+    }
+    records = [...bySup.values()]
+      .map((s) => ({
+        product: s.supplier,
+        sku: "—",
+        kind: "roll-up",
+        supplier: s.supplier,
+        units: s.units,
+        avg_unit_cost: s.units > 0 ? money(s.cogs / s.units) : null,
+        cogs: money(s.cogs),
+        cost_source: report.method,
+      }))
+      .sort((a, b) => b.cogs - a.cogs);
+  }
+
+  if (params.limit != null) {
+    records = records.slice(0, Number(params.limit));
+  }
+
+  const top = records[0];
+  const columns =
+    groupBy === "supplier"
+      ? ["supplier", "units", "avg_unit_cost", "cogs"]
+      : [
+          "product",
+          "sku",
+          "kind",
+          "supplier",
+          "units",
+          "avg_unit_cost",
+          "cogs",
+          "cost_source",
+        ];
+
+  return {
+    title: `${report.featureLabel} · ${report.periodFrom} → ${report.periodTo}`,
+    columns,
+    rows: records.map((r) =>
+      groupBy === "supplier"
+        ? [r.supplier, r.units, r.avg_unit_cost, r.cogs]
+        : [
+            r.product,
+            r.sku,
+            r.kind,
+            r.supplier,
+            r.units,
+            r.avg_unit_cost,
+            r.cogs,
+            r.cost_source,
+          ],
+    ),
+    chart: records.length
+      ? ({
+          type: "bar",
+          title: `COGS (${report.methodLabel})`,
+          series: [
+            {
+              name: "COGS",
+              data: records.slice(0, 12).map((r) => ({
+                key: (groupBy === "supplier" ? r.supplier : r.product).slice(
+                  0,
+                  22,
+                ),
+                value: r.cogs,
+              })),
+            },
+          ],
+        } satisfies ReportChartSpec)
+      : null,
+    records,
+    fallback: {
+      summary: top
+        ? `${report.featureLabel} Total $${report.totalCogs.toFixed(2)} over ${lookbackDays}d` +
+          (top
+            ? ` — top: ${top.product} at $${top.cogs.toFixed(2)}.`
+            : ".")
+        : `${report.featureLabel} No COGS in the last ${lookbackDays} days — need Orders (resale) and/or completed MOs (manufactured), plus price history or receipts.`,
+      body:
+        "QuickBooks is not auto-reconciled. Choose Weighted Average or FIFO in Settings to match your books as closely as possible; small variances from timing/rounding/mapping are still possible. Lot-level specific identification is out of scope.",
+    },
+    followUps: [
+      {
+        id: "by_supplier",
+        label: "Roll up by supplier",
+        templateId: "cogs_by_product",
+        params: { lookback_days: lookbackDays, group_by: "supplier" },
+      },
+      {
+        id: "90d",
+        label: "Last 90 days",
+        templateId: "cogs_by_product",
+        params: { lookback_days: 90, group_by: groupBy },
+      },
+    ] satisfies ReportFollowUp[],
+    emptyReason: records.length
+      ? undefined
+      : "Sync Orders and price history (and complete MOs for manufactured goods), or widen the period.",
+  };
+}
+
 export async function runReportTemplate(opts: {
   workspaceId: string;
   templateId: string;
@@ -891,6 +1281,20 @@ export async function runReportTemplate(opts: {
       break;
     case "top_sku_margin":
       computed = await computeTopSkuMargin(
+        opts.workspaceId,
+        params,
+        supabase,
+      );
+      break;
+    case "dead_stock":
+      computed = await computeDeadStock(
+        opts.workspaceId,
+        params,
+        supabase,
+      );
+      break;
+    case "cogs_by_product":
+      computed = await computeCogsByProduct(
         opts.workspaceId,
         params,
         supabase,

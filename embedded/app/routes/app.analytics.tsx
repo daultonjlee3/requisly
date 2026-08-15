@@ -236,7 +236,7 @@ export default function AnalyticsPage() {
               generating={generating}
             />
 
-            <InlineGrid columns={3} gap="400">
+            <InlineGrid columns={4} gap="400">
               <Card>
                 <BlockStack gap="100">
                   <Text as="h3" variant="headingSm">
@@ -244,6 +244,21 @@ export default function AnalyticsPage() {
                   </Text>
                   <Text as="p" variant="headingLg">
                     {analytics.closedCount}
+                  </Text>
+                </BlockStack>
+              </Card>
+              <Card>
+                <BlockStack gap="100">
+                  <Text as="h3" variant="headingSm">
+                    {analytics.cogs?.cardTitle ?? "COGS (Weighted Average)"}
+                  </Text>
+                  <Text as="p" variant="headingLg">
+                    {analytics.cogs?.totalCogs ?? "—"}
+                  </Text>
+                  <Text as="p" tone="subdued" variant="bodySm">
+                    {analytics.cogs
+                      ? `${analytics.cogs.periodLabel} · ${analytics.cogs.totalUnits} units`
+                      : "Last 30 days"}
                   </Text>
                 </BlockStack>
               </Card>

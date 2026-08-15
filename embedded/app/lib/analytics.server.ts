@@ -1,5 +1,6 @@
 import { createServiceClient } from "./supabase.server";
 import { money } from "./format";
+import { loadCogsAnalyticsSummary } from "./cogs.server";
 
 const SCORECARD_MIN = 5;
 
@@ -31,6 +32,15 @@ export type AnalyticsData = {
   /** Workspace-level monthly on-time rate (0–100) for Polaris Viz. */
   onTimeByMonth: AnalyticsChartPoint[];
   closedCount: number;
+  /** Period COGS labeled with active method — never ambiguous. */
+  cogs: {
+    cardTitle: string;
+    featureLabel: string;
+    totalCogs: string;
+    totalCogsRaw: number;
+    totalUnits: number;
+    periodLabel: string;
+  } | null;
   loadError: string | null;
 };
 
@@ -103,6 +113,7 @@ export async function loadAnalytics(workspaceId: string): Promise<AnalyticsData>
       spendByMonthExport: [],
       onTimeByMonth: [],
       closedCount: 0,
+      cogs: null,
       loadError: failures.join(" · "),
     };
   }
@@ -170,10 +181,26 @@ export async function loadAnalytics(workspaceId: string): Promise<AnalyticsData>
       value: v.total > 0 ? Math.round((v.onTime / v.total) * 100) : null,
     }));
 
+  let cogs: AnalyticsData["cogs"] = null;
+  try {
+    const summary = await loadCogsAnalyticsSummary(workspaceId, 30);
+    cogs = {
+      cardTitle: summary.cardTitle,
+      featureLabel: summary.featureLabel,
+      totalCogs: money(summary.totalCogs),
+      totalCogsRaw: summary.totalCogs,
+      totalUnits: summary.totalUnits,
+      periodLabel: `${summary.periodFrom} → ${summary.periodTo}`,
+    };
+  } catch {
+    cogs = null;
+  }
+
   return {
     loadError: null,
     isDemo: Boolean(workspace?.is_demo),
     closedCount: closedPos.length,
+    cogs,
     scorecards: scorecards.map((row) => ({
       supplierName: nameById.get(row.supplier_id) ?? "—",
       completedPos: row.completed_pos ?? 0,
