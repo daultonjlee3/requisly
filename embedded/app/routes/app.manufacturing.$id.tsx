@@ -23,7 +23,6 @@ import {
   getManufacturingOrder,
   previewBomRequirements,
   startManufacturingOrder,
-  type CompleteMoResult,
 } from "../lib/manufacturing.server";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
@@ -83,9 +82,7 @@ export default function ManufacturingOrderDetailPage() {
   const busy = navigation.state !== "idle";
 
   const completeResult =
-    actionData && "complete" in actionData
-      ? (actionData.complete as CompleteMoResult | undefined)
-      : undefined;
+    actionData && "complete" in actionData ? actionData.complete : undefined;
 
   const canComplete =
     mo.status === "draft" || mo.status === "in_progress";

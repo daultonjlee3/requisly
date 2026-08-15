@@ -12,9 +12,16 @@ import {
   currentLandedUnitCostAsOf,
   type PriceScheduleRow,
 } from "./pricing";
+import {
+  cogsCardTitle,
+  cogsFeatureLabel,
+  cogsMethodLabel,
+  type CogsMethod,
+} from "./cogs";
 import { createServiceClient } from "./supabase.server";
 
-export type CogsMethod = "weighted_average" | "fifo";
+export type { CogsMethod };
+export { cogsCardTitle, cogsFeatureLabel, cogsMethodLabel };
 
 export type CogsSettings = {
   method: CogsMethod;
@@ -72,19 +79,6 @@ type MoEvent = {
   qtyToMake: number;
   ingredients: Array<{ productVariantId: string; qty: number }>;
 };
-
-export function cogsMethodLabel(method: CogsMethod): string {
-  return method === "fifo" ? "FIFO" : "Weighted Average";
-}
-
-/** Card / report heading — never ambiguous which calculation is shown. */
-export function cogsCardTitle(method: CogsMethod): string {
-  return method === "fifo" ? "COGS (FIFO)" : "COGS (Weighted Average)";
-}
-
-export function cogsFeatureLabel(method: CogsMethod): string {
-  return `Requisly's COGS (${cogsMethodLabel(method)}, from your real purchase price history).`;
-}
 
 export async function getCogsSettings(
   workspaceId: string,

@@ -21,10 +21,10 @@ import {
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useMemo, useState } from "react";
+import { money } from "../lib/format";
 import { getMerchantContext } from "../lib/merchant.server";
 import {
   awardQuoteRequest,
-  formatComparisonCost,
   getQuoteRequestDetail,
   sendQuoteRequest,
 } from "../lib/quote-requests.server";
@@ -157,7 +157,7 @@ export default function QuoteRequestDetailPage() {
           </Text>
         );
       }
-      const costLabel = formatComparisonCost(cell.unitCost);
+      const costLabel = cell.unitCost == null ? "—" : money(cell.unitCost);
       const lead =
         cell.leadTimeDays != null ? `${cell.leadTimeDays}d` : null;
       return (

@@ -16,12 +16,8 @@ import {
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useState } from "react";
-import {
-  cogsFeatureLabel,
-  getCogsSettings,
-  setCogsMethod,
-  type CogsMethod,
-} from "../lib/cogs.server";
+import { cogsFeatureLabel, type CogsMethod } from "../lib/cogs";
+import { getCogsSettings, setCogsMethod } from "../lib/cogs.server";
 import { getMerchantContext } from "../lib/merchant.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
