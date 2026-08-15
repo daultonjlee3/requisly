@@ -204,7 +204,7 @@ export function SupplierLinkClient({
         args,
       );
       if (rpcError) {
-        setError(rpcError.message);
+        setError(rpcError);
         return;
       }
       const next = asPayload(payload);
