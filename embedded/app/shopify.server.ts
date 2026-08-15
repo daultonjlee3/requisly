@@ -142,7 +142,11 @@ export function extractBillingError(err: unknown): string {
 }
 
 export function isManagedPricingBlocked(detail: string): boolean {
-  return /managed pricing/i.test(detail);
+  return (
+    /managed pricing/i.test(detail) ||
+    /public distribution/i.test(detail) ||
+    /cannot use the Billing API/i.test(detail)
+  );
 }
 
 /** True for Vercel production or NODE_ENV=production (non-preview). */

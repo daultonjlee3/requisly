@@ -720,6 +720,7 @@ export async function sendPurchaseOrder(opts: {
   workspaceId: string;
   poId: string;
   workspaceName: string;
+  toEmail?: string | null;
 }): Promise<{
   token: string;
   url: string | null;
@@ -728,6 +729,7 @@ export async function sendPurchaseOrder(opts: {
   pdfFileName: string;
   emailSent: boolean;
   emailError: string | null;
+  emailTo: string | null;
   confirmAsIsUrl: string | null;
   markShippedUrl: string | null;
 }> {
@@ -757,9 +759,14 @@ export async function sendPurchaseOrder(opts: {
   const canResendStale =
     Boolean(po.confirmation_stale) &&
     ["sent", "viewed", "confirmed", "production"].includes(po.status);
-  if (po.status !== "draft" && po.status !== "sent" && !canResendStale) {
+  const canRefresh =
+    po.status === "draft" ||
+    po.status === "sent" ||
+    po.status === "viewed" ||
+    canResendStale;
+  if (!canRefresh) {
     throw new Error(
-      "Only draft, sent, or stale-confirmation POs can generate a Supplier Link",
+      "Only draft, sent, viewed, or stale-confirmation POs can generate a Supplier Link",
     );
   }
 
@@ -778,6 +785,15 @@ export async function sendPurchaseOrder(opts: {
       .from("supplier_link_tokens")
       .insert({ po_id: opts.poId, token });
     if (tokenError) throw new Error(tokenError.message);
+  }
+
+  const supplier = po.suppliers as unknown as {
+    name: string;
+    email: string | null;
+  } | null;
+  const emailTo = opts.toEmail?.trim() || supplier?.email?.trim() || "";
+  if (emailTo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailTo)) {
+    throw new Error("Recipient email looks invalid");
   }
 
   if (po.status === "draft" || canResendStale) {
@@ -801,6 +817,22 @@ export async function sendPurchaseOrder(opts: {
           channel: "email",
           pdf_document_id: pdf.id,
           resent_after_edit: canResendStale,
+          to: emailTo || undefined,
+        },
+      });
+    if (eventError) throw new Error(eventError.message);
+  } else if (emailTo) {
+    const { error: eventError } = await supabase
+      .from("po_timeline_events")
+      .insert({
+        po_id: opts.poId,
+        event_type: "sent",
+        actor: "merchant",
+        metadata: {
+          channel: "email",
+          pdf_document_id: pdf.id,
+          refresh: true,
+          to: emailTo,
         },
       });
     if (eventError) throw new Error(eventError.message);
@@ -820,13 +852,8 @@ export async function sendPurchaseOrder(opts: {
   const base = supplierLinkBaseUrl();
   const url = base ? `${base}/s/${token}` : null;
 
-  const supplier = po.suppliers as unknown as {
-    name: string;
-    email: string | null;
-  } | null;
-
   const emailResult = await sendPoSupplierEmail({
-    to: supplier?.email?.trim() || "",
+    to: emailTo,
     workspaceName: opts.workspaceName,
     poNumber: String(po.po_number ?? "PO"),
     supplierName: supplier?.name?.trim() || "Supplier",
@@ -846,6 +873,7 @@ export async function sendPurchaseOrder(opts: {
     pdfFileName: pdf.fileName,
     emailSent: emailResult.sent,
     emailError: emailResult.error ?? null,
+    emailTo: emailTo || null,
     confirmAsIsUrl: oneClick.confirmAsIsUrl,
     markShippedUrl: oneClick.markShippedUrl,
   };

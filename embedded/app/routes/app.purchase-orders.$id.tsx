@@ -19,6 +19,7 @@ import {
   Layout,
   Page,
   ProgressBar,
+  Select,
   Text,
   TextField,
 } from "@shopify/polaris";
@@ -60,6 +61,7 @@ import {
   updatePoCommercialFields,
 } from "../lib/purchase-orders.server";
 import { closePurchaseOrder } from "../lib/receiving.server";
+import { listSupplierContacts } from "../lib/suppliers.server";
 import {
   addMerchantShipment,
   listPoShipments,
@@ -79,10 +81,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     status: "active",
     sort: "name",
   });
+  const contacts = await listSupplierContacts(
+    merchant.workspace.id,
+    po.supplier.id,
+  );
   return {
     po,
     documents,
     shipments,
+    contacts,
     workspaceName: merchant.workspace.name,
     existingTemplates: templates.rows.map((t) => ({ id: t.id, name: t.name })),
     justEdited: url.searchParams.get("edited") === "1",
@@ -186,6 +193,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         workspaceId: merchant.workspace.id,
         poId,
         workspaceName: merchant.workspace.name,
+        toEmail: String(formData.get("to_email") ?? "").trim() || null,
       });
       if (wasFirstSend && !onboarding.flags.first_po_celebrated_at) {
         await markFirstPoCelebrated(merchant.workspace.id);
@@ -199,6 +207,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         pdfFileName: result.pdfFileName,
         emailSent: result.emailSent,
         emailError: result.emailError,
+        emailTo: result.emailTo,
       };
     }
     if (intent === "arrival") {
@@ -231,6 +240,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       sendToken: null,
       emailSent: false,
       emailError: null as string | null,
+      emailTo: null as string | null,
       pdfUrl: null,
       pdfFileName: null,
     };
@@ -241,6 +251,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       sendToken: null as string | null,
       emailSent: false,
       emailError: null as string | null,
+      emailTo: null as string | null,
       pdfUrl: null as string | null,
       pdfFileName: null as string | null,
     };
@@ -270,10 +281,14 @@ function stepStatusLabel(state: "done" | "current" | "future" | "skip") {
 }
 
 export default function PurchaseOrderDetail() {
-  const { po, documents, shipments, existingTemplates, justEdited } =
+  const { po, documents, shipments, contacts, existingTemplates, justEdited } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
+  const defaultSendEmail =
+    contacts.find((c) => c.isPrimary)?.email || po.supplier.email || "";
+  const [sendChoice, setSendChoice] = useState(defaultSendEmail || "__custom");
+  const [sendEmail, setSendEmail] = useState(defaultSendEmail);
   const [arrival, setArrival] = useState(po.estimatedArrivalRaw);
   const [paymentTerms, setPaymentTerms] = useState(po.paymentTerms ?? "");
   const [referenceNumber, setReferenceNumber] = useState(
@@ -802,23 +817,75 @@ export default function PurchaseOrderDetail() {
                     <Text as="p" tone="subdued" variant="bodySm">
                       {po.confirmationStale
                         ? "Resend so the supplier can confirm the edited PO."
-                        : "Emails the supplier (one-click confirm/ship + Reply-To), generates a PO PDF, moves draft → sent, and creates a no-login Supplier Link."}
+                        : "Emails the chosen contact (one-click confirm/ship + Reply-To), generates a PO PDF, moves draft → sent, and creates a no-login Supplier Link."}
                     </Text>
                     <Form method="post">
                       <input type="hidden" name="intent" value="send" />
-                      <Button submit variant="primary" loading={sending}>
-                        {po.confirmationStale
-                          ? "Resend for fresh confirmation"
-                          : linkToken
-                            ? "Refresh PDF & Supplier Link"
-                            : "Send to supplier"}
-                      </Button>
+                      <input type="hidden" name="to_email" value={sendEmail} />
+                      <BlockStack gap="300">
+                        <Select
+                          label="Send to"
+                          options={[
+                            ...contacts
+                              .filter((c) => c.email.trim())
+                              .map((c) => ({
+                                value: c.email,
+                                label: c.isPrimary
+                                  ? `${c.name} · ${c.email} (primary)`
+                                  : `${c.name} · ${c.email}`,
+                              })),
+                            ...(po.supplier.email &&
+                            !contacts.some((c) => c.email === po.supplier.email)
+                              ? [
+                                  {
+                                    value: po.supplier.email,
+                                    label: `${po.supplier.name} · ${po.supplier.email}`,
+                                  },
+                                ]
+                              : []),
+                            { value: "__custom", label: "Different email…" },
+                          ]}
+                          value={
+                            sendChoice === "__custom" ||
+                            contacts.some((c) => c.email === sendChoice) ||
+                            sendChoice === po.supplier.email
+                              ? sendChoice
+                              : "__custom"
+                          }
+                          onChange={(value) => {
+                            setSendChoice(value);
+                            if (value !== "__custom") setSendEmail(value);
+                          }}
+                        />
+                        {sendChoice === "__custom" ? (
+                          <TextField
+                            label="Email address"
+                            type="email"
+                            value={sendEmail}
+                            onChange={setSendEmail}
+                            autoComplete="email"
+                            requiredIndicator
+                          />
+                        ) : null}
+                        <Button submit variant="primary" loading={sending}>
+                          {po.confirmationStale
+                            ? "Resend for fresh confirmation"
+                            : linkToken
+                              ? "Refresh PDF & send email"
+                              : "Send to supplier"}
+                        </Button>
+                      </BlockStack>
                     </Form>
                     {actionData?.emailSent ? (
                       <Banner tone="success" title="Email sent to supplier">
                         <p>
-                          Sent to {po.supplier.email || "supplier"} with
-                          one-click actions and Reply-To on inbound.requisly.com.
+                          Sent to{" "}
+                          {actionData.emailTo ||
+                            sendEmail ||
+                            po.supplier.email ||
+                            "supplier"}{" "}
+                          with one-click actions and Reply-To on
+                          inbound.requisly.com.
                         </p>
                       </Banner>
                     ) : actionData?.emailError ? (

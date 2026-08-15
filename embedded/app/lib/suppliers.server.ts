@@ -56,6 +56,29 @@ export type SupplierDetail = {
   }>;
 };
 
+export async function listSupplierContacts(
+  workspaceId: string,
+  supplierId: string,
+): Promise<SupplierContact[]> {
+  const supabase = createServiceClient();
+  const { data, error } = await supabase
+    .from("supplier_contacts")
+    .select("id, name, email, phone, title, is_primary")
+    .eq("workspace_id", workspaceId)
+    .eq("supplier_id", supplierId)
+    .order("is_primary", { ascending: false })
+    .order("name");
+  if (error) throw new Error(error.message);
+  return (data ?? []).map((c) => ({
+    id: c.id,
+    name: c.name,
+    email: c.email,
+    phone: c.phone,
+    title: c.title,
+    isPrimary: Boolean(c.is_primary),
+  }));
+}
+
 function emptyToNull(value: FormDataEntryValue | null) {
   const s = String(value ?? "").trim();
   return s.length ? s : null;
