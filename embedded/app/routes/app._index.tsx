@@ -29,6 +29,7 @@ import {
   PackageIcon,
   AlertCircleIcon,
   ChartVerticalIcon,
+  CalendarTimeIcon,
 } from "@shopify/polaris-icons";
 import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
 import { useEffect } from "react";
@@ -42,6 +43,7 @@ import {
   listActiveInsights,
   workspaceIsInsightEligible,
 } from "../lib/ai-agents.server";
+import { listUpcomingRecurringPOs } from "../lib/recurring-pos.server";
 import { loadDashboard } from "../lib/dashboard.server";
 import { getMerchantContext } from "../lib/merchant.server";
 import {
@@ -70,11 +72,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return merchant.redirect("/app/welcome");
   }
 
-  const [dashboard, gate, insights, pinnedReports] = await Promise.all([
+  const [dashboard, gate, insights, pinnedReports, upcomingRecurring] =
+    await Promise.all([
     loadDashboard(merchant.workspace.id, { forceError }),
     workspaceIsInsightEligible(merchant.workspace.id),
     listActiveInsights(merchant.workspace.id, 12),
     listPinnedReports(merchant.workspace.id, 5),
+    listUpcomingRecurringPOs(merchant.workspace.id),
   ]);
 
   const ms = timer.end({
@@ -94,6 +98,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     insightsGateReason: gate.reason ?? null,
     insights,
     pinnedReports,
+    upcomingRecurring,
     onboarding,
     loaderMs: ms,
   };
@@ -158,6 +163,7 @@ export default function TodaysWork() {
     insights,
     pinnedReports,
     onboarding,
+    upcomingRecurring,
     loaderMs,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
@@ -169,6 +175,7 @@ export default function TodaysWork() {
   const sync = actionData?.sync ?? null;
   const bannerError = actionData?.error ?? syncError;
   const activated = searchParams.get("activated") === "1";
+  const recurringError = searchParams.get("recurring_error");
 
   useEffect(() => {
     if (!activated) return;
@@ -268,6 +275,20 @@ export default function TodaysWork() {
           </Banner>
         ) : null}
 
+        {recurringError ? (
+          <Banner
+            tone="warning"
+            title="Couldn’t create a recurring PO"
+            onDismiss={() => {
+              const next = new URLSearchParams(searchParams);
+              next.delete("recurring_error");
+              setSearchParams(next, { replace: true });
+            }}
+          >
+            <p>{recurringError}</p>
+          </Banner>
+        ) : null}
+
         {pinnedReports.length ? (
           <Card>
             <BlockStack gap="300">
@@ -338,6 +359,25 @@ export default function TodaysWork() {
               {sync.inventoryLevels} inventory levels
             </p>
           </Banner>
+        ) : null}
+
+        {upcomingRecurring.length ? (
+          <DashCard
+            title="Upcoming recurring POs"
+            empty="No recurring drafts due soon."
+            icon={CalendarTimeIcon}
+            rows={upcomingRecurring.map((row) => ({
+              id: row.id,
+              href: row.href,
+              primary: row.primary,
+              secondary: row.secondary,
+              meta: row.meta,
+              status: "draft" as const,
+              right: row.right,
+              badgeLabel: row.badgeLabel,
+              badgeTone: row.badgeTone,
+            }))}
+          />
         ) : null}
 
         {!dashboard.loadError &&
@@ -509,8 +549,12 @@ function DashCard({
                     </Text>
                   </BlockStack>
                   <InlineStack gap="200" blockAlign="center">
-                    <Badge tone={statusBadgeTone(row.status)}>
-                      {statusLabel(row.status)}
+                    <Badge
+                      tone={
+                        row.badgeTone ?? statusBadgeTone(row.status)
+                      }
+                    >
+                      {row.badgeLabel ?? statusLabel(row.status)}
                     </Badge>
                     <Text as="span" variant="bodySm" tone="subdued">
                       {row.meta}

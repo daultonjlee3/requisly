@@ -22,7 +22,8 @@ export type CalendarPo = {
   total: string;
   supplierName: string;
   plotDate: string;
-  dateSource: "arrival" | "ship";
+  dateSource: "arrival" | "ship" | "recurring";
+  href?: string;
 };
 
 function pad(n: number) {
@@ -109,8 +110,8 @@ export function PoCalendar({
             image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
           >
             <p>
-              Orders appear when they have a requested ship date or estimated
-              arrival in this month.
+              Orders appear when they have a requested ship date, estimated
+              arrival, or a recurring template draft date in this month.
             </p>
           </EmptyState>
         </Box>
@@ -134,7 +135,9 @@ export function PoCalendar({
                 id={po.id}
                 key={po.id}
                 position={index}
-                onClick={() => navigate(`/app/purchase-orders/${po.id}`)}
+                onClick={() =>
+                  navigate(po.href ?? `/app/purchase-orders/${po.id}`)
+                }
               >
                 <IndexTable.Cell>
                   <Text as="span" fontWeight="semibold">
@@ -142,7 +145,11 @@ export function PoCalendar({
                   </Text>
                 </IndexTable.Cell>
                 <IndexTable.Cell>
-                  {po.dateSource === "arrival" ? "Arrival" : "Ship"}
+                  {po.dateSource === "arrival"
+                    ? "Arrival"
+                    : po.dateSource === "recurring"
+                      ? "Recurring"
+                      : "Ship"}
                 </IndexTable.Cell>
                 <IndexTable.Cell>{po.poNumber}</IndexTable.Cell>
                 <IndexTable.Cell>{po.supplierName}</IndexTable.Cell>

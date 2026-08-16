@@ -33,6 +33,8 @@ import { useFilteredCsvExport } from "../lib/use-filtered-csv-export";
 import { listPurchaseOrders } from "../lib/purchase-orders.server";
 import { listSuppliers } from "../lib/suppliers.server";
 import { TIMELINE_STEPS } from "../lib/po-status";
+import { addUtcDays, utcToday } from "../lib/recurring-po";
+import { listCalendarRecurringEvents } from "../lib/recurring-pos.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: false });
@@ -44,7 +46,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const q = parseListQuery(url.searchParams.get("q"));
   const page = parseListPage(url.searchParams.get("page"));
   const forExport = url.searchParams.get("export") === "1";
-  const [poPage, suppliers] = await Promise.all([
+  const today = utcToday();
+  const [poPage, suppliers, recurring] = await Promise.all([
     listPurchaseOrders(merchant.workspace.id, {
       status,
       supplierId,
@@ -56,6 +59,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           : { cap: LIST_VIEW_CAP }),
     }),
     listSuppliers(merchant.workspace.id),
+    view === "calendar"
+      ? listCalendarRecurringEvents(
+          merchant.workspace.id,
+          addUtcDays(today, -180),
+          addUtcDays(today, 400),
+        )
+      : Promise.resolve([]),
   ]);
   return {
     workspaceName: merchant.workspace.name,
@@ -71,6 +81,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     truncated: view !== "list" && !forExport && poPage.total > poPage.rows.length,
     exportRows: forExport ? poPage.rows : null,
     exportToken: forExport ? Date.now() : null,
+    recurring,
   };
 };
 
@@ -87,6 +98,7 @@ export default function PurchaseOrdersList() {
     q,
     page,
     truncated,
+    recurring,
   } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -182,25 +194,40 @@ export default function PurchaseOrdersList() {
       : []),
   ];
 
-  const calendarPos = purchaseOrders
-    .map((po) => {
-      const plotDate = po.estimatedArrivalRaw || po.requestedShipDateRaw;
-      if (!plotDate) return null;
-      return {
-        id: po.id,
-        poNumber: po.poNumber,
-        status: po.status,
-        statusLabel: po.statusLabel,
-        statusTone: po.statusTone,
-        total: po.total,
-        supplierName: po.supplierName,
-        plotDate,
-        dateSource: po.estimatedArrivalRaw
-          ? ("arrival" as const)
-          : ("ship" as const),
-      };
-    })
-    .filter((p): p is NonNullable<typeof p> => p != null);
+  const calendarPos = [
+    ...purchaseOrders
+      .map((po) => {
+        const plotDate = po.estimatedArrivalRaw || po.requestedShipDateRaw;
+        if (!plotDate) return null;
+        return {
+          id: po.id,
+          poNumber: po.poNumber,
+          status: po.status,
+          statusLabel: po.statusLabel,
+          statusTone: po.statusTone,
+          total: po.total,
+          supplierName: po.supplierName,
+          plotDate,
+          dateSource: po.estimatedArrivalRaw
+            ? ("arrival" as const)
+            : ("ship" as const),
+          href: `/app/purchase-orders/${po.id}`,
+        };
+      })
+      .filter((p): p is NonNullable<typeof p> => p != null),
+    ...recurring.map((row) => ({
+      id: row.id,
+      poNumber: row.poNumber,
+      status: "draft" as const,
+      statusLabel: row.statusLabel,
+      statusTone: row.statusTone,
+      total: row.total,
+      supplierName: row.supplierName,
+      plotDate: row.plotDate,
+      dateSource: row.dateSource,
+      href: row.href,
+    })),
+  ];
 
   return (
     <Page

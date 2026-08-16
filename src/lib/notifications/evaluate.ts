@@ -23,6 +23,10 @@ function productsUrl() {
   return `${merchantAppBaseUrl()}/app/products`;
 }
 
+function supplierUrl(supplierId: string) {
+  return `${merchantAppBaseUrl()}/app/suppliers/${supplierId}?tab=contracts`;
+}
+
 function todayUTC() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -230,6 +234,54 @@ async function candidatesForRule(
             "",
             `Review products: ${productsUrl()}`,
             "Open Requisly in Shopify Admin → Products or New PO to restock.",
+          ].join("\n"),
+        };
+      });
+    }
+
+    case "contract_renewal": {
+      const lead = rule.threshold_value ?? 30;
+      const today = todayUTC();
+      const [y, m, d] = today.split("-").map(Number);
+      const horizon = new Date(Date.UTC(y, m - 1, d + lead))
+        .toISOString()
+        .slice(0, 10);
+
+      const { data: contracts, error } = await admin
+        .from("supplier_contracts")
+        .select("id, title, renewal_date, supplier_id, suppliers(name)")
+        .eq("workspace_id", workspaceId)
+        .not("renewal_date", "is", null)
+        .gte("renewal_date", today)
+        .lte("renewal_date", horizon);
+
+      if (error) throw new Error(error.message);
+
+      return (contracts ?? []).map((row) => {
+        const supplier = row.suppliers as unknown as { name: string } | null;
+        const supplierName = supplier?.name ?? "Supplier";
+        const days =
+          Math.round(
+            (Date.parse(`${row.renewal_date}T00:00:00Z`) -
+              Date.parse(`${today}T00:00:00Z`)) /
+              86_400_000,
+          );
+        const when =
+          days <= 0
+            ? "today"
+            : days === 1
+              ? "tomorrow"
+              : `in ${days} days`;
+        return {
+          po_id: null,
+          po_number: row.title,
+          dedupe_key: `contract_renewal:${row.id}:${row.renewal_date}`,
+          subject: `${supplierName} contract renews ${when}`,
+          body: [
+            `${row.title} with ${supplierName} renews ${when} (${row.renewal_date}).`,
+            "This is a reminder only — Requisly does not auto-renew or auto-send.",
+            "",
+            `Open contracts: ${supplierUrl(row.supplier_id)}`,
           ].join("\n"),
         };
       });

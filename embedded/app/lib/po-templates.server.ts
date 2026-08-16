@@ -7,6 +7,12 @@ import {
   sanitizeSearch,
   type ListPageResult,
 } from "./list-table";
+import {
+  normalizeKind,
+  scheduleLabel,
+  scheduleToDb,
+  type RecurringSchedule,
+} from "./recurring-po";
 
 export type TemplateStatus = "active" | "archived";
 
@@ -33,6 +39,9 @@ export type PoTemplateListItem = {
   createdLabel: string;
   createdAt: string;
   createdBy: string;
+  scheduleEnabled: boolean;
+  scheduleLabel: string;
+  scheduleNextRunOn: string | null;
 };
 
 export type PoTemplateDetail = {
@@ -50,6 +59,8 @@ export type PoTemplateDetail = {
   lastUsedLabel: string;
   createdBy: string;
   sourcePoId: string | null;
+  schedule: RecurringSchedule;
+  scheduleLastError: string | null;
   lines: Array<{
     id: string;
     description: string;
@@ -96,7 +107,7 @@ export async function listPoTemplates(
   let query = supabase
     .from("purchase_order_templates")
     .select(
-      "id, name, description, supplier_id, status, use_count, last_used_at, created_at, created_by_label, suppliers(name), purchase_order_template_lines(id, description, sku)",
+      "id, name, description, supplier_id, status, use_count, last_used_at, created_at, created_by_label, schedule_enabled, schedule_kind, schedule_interval, schedule_day_of_month, schedule_lead_days, schedule_next_run_on, suppliers(name), purchase_order_template_lines(id, description, sku)",
       { count: "exact" },
     )
     .eq("workspace_id", workspaceId);
@@ -156,6 +167,16 @@ export async function listPoTemplates(
       createdAt: row.created_at,
       createdLabel: shortDate(row.created_at),
       createdBy: row.created_by_label?.trim() || "Merchant",
+      scheduleEnabled: Boolean(row.schedule_enabled),
+      scheduleLabel: scheduleLabel({
+        enabled: Boolean(row.schedule_enabled),
+      kind: normalizeKind(row.schedule_kind),
+        interval: Number(row.schedule_interval) || 1,
+        dayOfMonth: row.schedule_day_of_month,
+        leadDays: Number(row.schedule_lead_days) || 7,
+        nextRunOn: row.schedule_next_run_on,
+      }),
+      scheduleNextRunOn: row.schedule_next_run_on,
     };
   });
   return { rows, total: count ?? rows.length };
@@ -284,6 +305,15 @@ export async function getPoTemplateDetail(
       : "Never used",
     createdBy: data.created_by_label?.trim() || "Merchant",
     sourcePoId: data.source_po_id,
+    schedule: {
+      enabled: Boolean(data.schedule_enabled),
+      kind: normalizeKind(data.schedule_kind),
+      interval: Number(data.schedule_interval) || 1,
+      dayOfMonth: data.schedule_day_of_month,
+      leadDays: Number(data.schedule_lead_days) || 7,
+      nextRunOn: data.schedule_next_run_on,
+    },
+    scheduleLastError: data.schedule_last_error ?? null,
     lines: lines.map((line) => ({
       id: line.id,
       description: line.description,
@@ -351,10 +381,14 @@ export async function createPoTemplate(opts: {
   sourcePoId?: string | null;
   lines: PoTemplateLineInput[];
   metadata?: Record<string, unknown>;
+  schedule?: RecurringSchedule;
 }): Promise<{ id: string }> {
   const name = opts.name.trim();
   if (!name) throw new Error("Template name is required");
   if (!opts.lines.length) throw new Error("Add at least one product line");
+  if (opts.schedule?.enabled && !opts.supplierId) {
+    throw new Error("Pick a supplier before enabling a recurring schedule");
+  }
 
   const supabase = createServiceClient();
   const { data, error } = await supabase
@@ -375,6 +409,7 @@ export async function createPoTemplate(opts: {
         ...(opts.metadata ?? {}),
         line_count: opts.lines.length,
       },
+      ...(opts.schedule ? scheduleToDb(opts.schedule) : {}),
     })
     .select("id")
     .single();
@@ -396,9 +431,13 @@ export async function updatePoTemplate(opts: {
   paymentTerms?: string | null;
   status?: TemplateStatus;
   lines: PoTemplateLineInput[];
+  schedule?: RecurringSchedule;
 }): Promise<void> {
   const name = opts.name.trim();
   if (!name) throw new Error("Template name is required");
+  if (opts.schedule?.enabled && !opts.supplierId) {
+    throw new Error("Pick a supplier before enabling a recurring schedule");
+  }
 
   const supabase = createServiceClient();
   const { error } = await supabase
@@ -413,6 +452,9 @@ export async function updatePoTemplate(opts: {
       payment_terms: emptyToNull(opts.paymentTerms),
       status: opts.status ?? "active",
       metadata: { line_count: opts.lines.length },
+      ...(opts.schedule
+        ? { ...scheduleToDb(opts.schedule), schedule_last_error: null }
+        : {}),
     })
     .eq("id", opts.templateId)
     .eq("workspace_id", opts.workspaceId);

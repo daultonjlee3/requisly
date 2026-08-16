@@ -15,6 +15,7 @@ import {
 } from "@shopify/polaris";
 import { SearchIcon } from "@shopify/polaris-icons";
 import { useMemo, useState } from "react";
+import { RecurringScheduleFields } from "./RecurringScheduleFields";
 import {
   costInputValue,
   gidToNumericId,
@@ -26,6 +27,7 @@ import type {
   NewPoShopifyVariant,
   NewPoSupplierProduct,
 } from "../lib/po-types";
+import type { RecurringSchedule } from "../lib/recurring-po";
 
 export type TemplateFormLine = {
   key: string;
@@ -47,6 +49,7 @@ export type TemplateFormValues = {
   paymentTerms: string;
   status: "active" | "archived";
   lines: TemplateFormLine[];
+  schedule: RecurringSchedule;
 };
 
 type Props = {
@@ -60,6 +63,7 @@ type Props = {
   error?: string | null;
   submitLabel?: string;
   sourcePoId?: string | null;
+  scheduleLastError?: string | null;
 };
 
 function emptyLine(): TemplateFormLine {
@@ -131,6 +135,7 @@ export function TemplateForm({
   error,
   submitLabel = "Save template",
   sourcePoId = null,
+  scheduleLastError = null,
 }: Props) {
   const shopify = useAppBridge();
   const navigation = useNavigation();
@@ -146,6 +151,16 @@ export function TemplateForm({
   const [status, setStatus] = useState(initial.status);
   const [lines, setLines] = useState<TemplateFormLine[]>(
     initial.lines.length ? initial.lines : [emptyLine()],
+  );
+  const [schedule, setSchedule] = useState<RecurringSchedule>(
+    initial.schedule ?? {
+      enabled: false,
+      kind: "every_n_days",
+      interval: 14,
+      dayOfMonth: 1,
+      leadDays: 7,
+      nextRunOn: null,
+    },
   );
   const [searchValue, setSearchValue] = useState("");
   const [clientError, setClientError] = useState<string | null>(null);
@@ -332,6 +347,32 @@ export function TemplateForm({
       <input type="hidden" name="status" value={status} />
       <input
         type="hidden"
+        name="schedule_enabled"
+        value={schedule.enabled ? "true" : "false"}
+      />
+      <input type="hidden" name="schedule_kind" value={schedule.kind} />
+      <input
+        type="hidden"
+        name="schedule_interval"
+        value={String(schedule.interval)}
+      />
+      <input
+        type="hidden"
+        name="schedule_day_of_month"
+        value={String(schedule.dayOfMonth ?? "")}
+      />
+      <input
+        type="hidden"
+        name="schedule_lead_days"
+        value={String(schedule.leadDays)}
+      />
+      <input
+        type="hidden"
+        name="schedule_next_run_on"
+        value={schedule.nextRunOn ?? ""}
+      />
+      <input
+        type="hidden"
         name="lines_json"
         value={JSON.stringify(
           lines
@@ -434,6 +475,14 @@ export function TemplateForm({
               />
             </FormLayout>
           </BlockStack>
+        </Card>
+
+        <Card>
+          <RecurringScheduleFields
+            schedule={schedule}
+            onChange={setSchedule}
+            lastError={scheduleLastError}
+          />
         </Card>
 
         <Card>

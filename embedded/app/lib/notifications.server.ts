@@ -6,7 +6,8 @@ export type NotificationRuleType =
   | "shipment_delayed"
   | "arriving_soon"
   | "inventory_low"
-  | "inbound_reply_unparsed";
+  | "inbound_reply_unparsed"
+  | "contract_renewal";
 
 export const RULE_COPY: Record<
   NotificationRuleType,
@@ -37,6 +38,12 @@ export const RULE_COPY: Record<
     title: "Supplier reply not understood",
     description:
       "Email when a supplier replies to a PO and Requisly cannot parse the message.",
+  },
+  contract_renewal: {
+    title: "Contract renewal approaching",
+    description:
+      "Email when a vendor contract’s renewal or end date is within the lead window.",
+    thresholdLabel: "Days before renewal",
   },
 };
 
@@ -113,7 +120,10 @@ export async function loadNotificationSettings(
           po?.po_number ??
           (type === "inventory_low" || dedupe?.startsWith("inventory_low:")
             ? "Low-stock SKU"
-            : "—"),
+            : type === "contract_renewal" ||
+                dedupe?.startsWith("contract_renewal:")
+              ? "Vendor contract"
+              : "—"),
         recipient: row.recipient_email ?? "—",
         sentAt: relativeTime(row.sent_at),
       };

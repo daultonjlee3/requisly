@@ -107,6 +107,7 @@ export default function App() {
             Today's Work
           </Link>
           <Link to="/app/purchase-orders">Purchase orders</Link>
+          <Link to="/app/blankets">Blanket POs</Link>
           <Link to="/app/quote-requests">Quote requests</Link>
           <Link to="/app/purchase-orders/new">New PO</Link>
           <Link to="/app/templates">Templates</Link>

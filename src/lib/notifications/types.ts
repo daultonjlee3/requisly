@@ -3,7 +3,8 @@ export type NotificationRuleType =
   | "shipment_delayed"
   | "arriving_soon"
   | "inventory_low"
-  | "inbound_reply_unparsed";
+  | "inbound_reply_unparsed"
+  | "contract_renewal";
 
 export type NotificationRule = {
   id: string;

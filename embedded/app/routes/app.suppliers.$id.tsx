@@ -29,6 +29,8 @@ import { TitleBar } from "@shopify/app-bridge-react";
 import { useCallback, useState } from "react";
 import { SectionHeading } from "../components/SectionHeading";
 import { SupplierContactsPanel } from "../components/SupplierContactsPanel";
+import { SupplierBlanketsPanel } from "../components/SupplierBlanketsPanel";
+import { SupplierContractsPanel } from "../components/SupplierContractsPanel";
 import { SupplierProductsPanel } from "../components/SupplierProductsPanel";
 import { EMPTY_STATE_IMAGE } from "../lib/empty-state-images";
 import { getMerchantContext } from "../lib/merchant.server";
@@ -51,6 +53,16 @@ import {
   updateSupplier,
   updateSupplierContact,
 } from "../lib/suppliers.server";
+import {
+  createSupplierContract,
+  deleteSupplierContract,
+  listSupplierContracts,
+  updateSupplierContract,
+} from "../lib/supplier-contracts.server";
+import {
+  createBlanketPurchaseOrder,
+  listBlanketPurchaseOrders,
+} from "../lib/blanket-pos.server";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
@@ -59,9 +71,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     sync: onProductsTab ? "auto" : false,
   });
   const supplierId = params.id ?? "";
-  const [supplier, scorecard] = await Promise.all([
+  const [supplier, scorecard, contracts, blankets] = await Promise.all([
     getSupplierDetail(merchant.workspace.id, supplierId),
     loadSupplierScorecardExport(merchant.workspace.id, supplierId),
+    listSupplierContracts(merchant.workspace.id, supplierId),
+    listBlanketPurchaseOrders(merchant.workspace.id, { supplierId }),
   ]);
   if (!supplier) throw new Response("Not found", { status: 404 });
 
@@ -72,6 +86,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   return {
     supplier,
     scorecard,
+    contracts,
+    blankets,
     shopifyVariants,
     syncError: merchant.syncError,
   };
@@ -112,6 +128,66 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       );
       return merchant.redirect(`/app/suppliers/${supplierId}`);
     }
+    if (intent === "create_blanket") {
+      const created = await createBlanketPurchaseOrder({
+        workspaceId: merchant.workspace.id,
+        supplierId,
+        title: String(formData.get("title") ?? ""),
+        startDate: String(formData.get("start_date") ?? ""),
+        endDate: String(formData.get("end_date") ?? ""),
+        committedQty: String(formData.get("committed_qty") ?? ""),
+        committedValue: String(formData.get("committed_value") ?? ""),
+        notes: String(formData.get("notes") ?? ""),
+      });
+      return merchant.redirect(`/app/blankets/${created.id}`);
+    }
+    if (
+      intent === "create_contract" ||
+      intent === "update_contract" ||
+      intent === "delete_contract"
+    ) {
+      const fileField = formData.get("file");
+      const file =
+        fileField instanceof File && fileField.size > 0
+          ? {
+              name: fileField.name,
+              type: fileField.type || "application/octet-stream",
+              bytes: Buffer.from(await fileField.arrayBuffer()),
+            }
+          : null;
+      const contractsPath = `/app/suppliers/${supplierId}?tab=contracts`;
+      if (intent === "create_contract") {
+        await createSupplierContract({
+          workspaceId: merchant.workspace.id,
+          supplierId,
+          title: String(formData.get("title") ?? ""),
+          startDate: String(formData.get("start_date") ?? ""),
+          renewalDate: String(formData.get("renewal_date") ?? ""),
+          notes: String(formData.get("notes") ?? ""),
+          file,
+        });
+        return merchant.redirect(contractsPath);
+      }
+      if (intent === "update_contract") {
+        await updateSupplierContract({
+          workspaceId: merchant.workspace.id,
+          supplierId,
+          contractId: String(formData.get("contract_id") ?? ""),
+          title: String(formData.get("title") ?? ""),
+          startDate: String(formData.get("start_date") ?? ""),
+          renewalDate: String(formData.get("renewal_date") ?? ""),
+          notes: String(formData.get("notes") ?? ""),
+          file,
+        });
+        return merchant.redirect(contractsPath);
+      }
+      await deleteSupplierContract({
+        workspaceId: merchant.workspace.id,
+        supplierId,
+        contractId: String(formData.get("contract_id") ?? ""),
+      });
+      return merchant.redirect(contractsPath);
+    }
     if (intent === "link_shopify_products") {
       const effectiveDate =
         String(formData.get("effective_date") ?? "").trim() || null;
@@ -149,13 +225,21 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
 };
 
 export default function SupplierDetail() {
-  const { supplier, scorecard, shopifyVariants, syncError } =
+  const { supplier, scorecard, contracts, blankets, shopifyVariants, syncError } =
     useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
   const navigation = useNavigation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const tab = searchParams.get("tab") === "products" ? 1 : 0;
+  const tabParam = searchParams.get("tab");
+  const tab =
+    tabParam === "products"
+      ? 1
+      : tabParam === "contracts"
+        ? 2
+        : tabParam === "blankets"
+          ? 3
+          : 0;
 
   const [name, setName] = useState(supplier.name);
   const [paymentTerms, setPaymentTerms] = useState(
@@ -165,7 +249,10 @@ export default function SupplierDetail() {
 
   const onTabChange = useCallback(
     (selected: number) => {
-      setSearchParams(selected === 1 ? { tab: "products" } : {});
+      if (selected === 1) setSearchParams({ tab: "products" });
+      else if (selected === 2) setSearchParams({ tab: "contracts" });
+      else if (selected === 3) setSearchParams({ tab: "blankets" });
+      else setSearchParams({});
     },
     [setSearchParams],
   );
@@ -292,6 +379,14 @@ export default function SupplierDetail() {
               id: "products",
               content: `Products (${supplier.products.length})`,
             },
+            {
+              id: "contracts",
+              content: `Contracts (${contracts.length})`,
+            },
+            {
+              id: "blankets",
+              content: `Blankets (${blankets.length})`,
+            },
           ]}
           selected={tab}
           onSelect={onTabChange}
@@ -352,12 +447,24 @@ export default function SupplierDetail() {
                 </IndexTable>
               </Card>
             )
-          ) : (
+          ) : tab === 1 ? (
             <SupplierProductsPanel
               supplierId={supplier.id}
               products={supplier.products}
               shopifyVariants={shopifyVariants}
               alreadyLinkedShopifyVariantIds={alreadyLinkedShopifyVariantIds}
+            />
+          ) : tab === 2 ? (
+            <SupplierContractsPanel contracts={contracts} />
+          ) : (
+            <SupplierBlanketsPanel
+              blankets={blankets}
+              error={
+                actionData?.error &&
+                navigation.formData?.get("intent") === "create_blanket"
+                  ? actionData.error
+                  : null
+              }
             />
           )}
         </Tabs>

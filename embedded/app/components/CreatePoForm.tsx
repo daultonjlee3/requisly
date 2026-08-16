@@ -244,6 +244,7 @@ export function CreatePoForm({
   submitLabel = "Save draft",
   lockSupplier = false,
   templateId = null,
+  showBlanketSelect = true,
 }: {
   formData: NewPoFormData;
   error?: string | null;
@@ -255,6 +256,8 @@ export function CreatePoForm({
   lockSupplier?: boolean;
   /** When set, saved on create so template usage stats stay accurate. */
   templateId?: string | null;
+  /** Blanket picker is create-only. Edits keep the original blanket and re-sync remaining. */
+  showBlanketSelect?: boolean;
 }) {
   const shopify = useAppBridge();
   const navigation = useNavigation();
@@ -290,6 +293,7 @@ export function CreatePoForm({
   const [shippingAmount, setShippingAmount] = useState(
     initial?.shippingAmount ?? "",
   );
+  const [blanketPoId, setBlanketPoId] = useState(initial?.blanketPoId ?? "");
   const [adjustmentAmount, setAdjustmentAmount] = useState(
     initial?.adjustmentAmount ?? "",
   );
@@ -576,7 +580,15 @@ export function CreatePoForm({
     setPaymentTerms(
       formData.suppliers.find((s) => s.id === next)?.paymentTerms ?? "",
     );
+    const keepBlanket = (formData.blankets ?? []).some(
+      (b) => b.id === blanketPoId && b.supplierId === next,
+    );
+    if (!keepBlanket) setBlanketPoId("");
   }
+
+  const supplierBlankets = (formData.blankets ?? []).filter(
+    (b) => b.supplierId === supplierId,
+  );
 
   function validateBeforeSubmit(): boolean {
     if (!supplierId) {
@@ -632,6 +644,9 @@ export function CreatePoForm({
       <input type="hidden" name="tax_amount" value={taxAmount} />
       <input type="hidden" name="shipping_amount" value={shippingAmount} />
       <input type="hidden" name="adjustment_amount" value={adjustmentAmount} />
+      {showBlanketSelect ? (
+        <input type="hidden" name="blanket_po_id" value={blanketPoId} />
+      ) : null}
       <input
         type="hidden"
         name="lines_json"
@@ -1001,6 +1016,22 @@ export function CreatePoForm({
                   onChange={onSupplierChange}
                   disabled={lockSupplier}
                 />
+                {showBlanketSelect && supplierBlankets.length > 0 ? (
+                  <Select
+                    label="Draw from blanket"
+                    options={[
+                      { label: "None — standalone PO", value: "" },
+                      ...supplierBlankets.map((b) => ({
+                        label: `${b.blanketNumber} · ${b.title} · ${b.remainingLabel} left`,
+                        value: b.id,
+                        disabled: !b.canDraw,
+                      })),
+                    ]}
+                    value={blanketPoId}
+                    onChange={setBlanketPoId}
+                    helpText="Draws this draft down against the remaining commitment. Never auto-sends."
+                  />
+                ) : null}
                 <Select
                   label="Ship to"
                   options={formData.locations.map((l) => ({

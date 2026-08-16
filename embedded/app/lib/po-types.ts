@@ -1,3 +1,4 @@
+import type { BlanketPickerOption } from "./blanket-po";
 import type { PoStatus } from "./po-status";
 
 export type NewPoSupplierProduct = {
@@ -33,6 +34,7 @@ export type NewPoFormData = {
    */
   priorCosts: Record<string, number>;
   defaultSupplierId: string | null;
+  blankets: BlanketPickerOption[];
 };
 
 /** Prefill payload when starting a PO from a template (or edit draft). */
@@ -58,6 +60,7 @@ export type CreatePoInitialData = {
   taxAmount?: string;
   shippingAmount?: string;
   adjustmentAmount?: string;
+  blanketPoId?: string;
 };
 
 export type ReceiptCondition =
@@ -112,4 +115,6 @@ export type DashRow = {
   meta: string;
   status: PoStatus;
   right?: string;
+  badgeLabel?: string;
+  badgeTone?: "info" | "success" | "warning" | "critical" | "attention";
 };

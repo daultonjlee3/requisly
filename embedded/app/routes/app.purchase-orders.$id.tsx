@@ -36,6 +36,7 @@ import { PendingProposalsPanel } from "../components/PendingProposalsPanel";
 import { PoDocumentsCard } from "../components/PoDocumentsCard";
 import { PoShipmentsCard } from "../components/PoShipmentsCard";
 import { SaveAsTemplateCard } from "../components/SaveAsTemplateCard";
+import { BlanketPoCard } from "../components/BlanketPoCard";
 import { ThreeWayMatchCard } from "../components/ThreeWayMatchCard";
 import {
   generateAndStorePoPdf,
@@ -451,6 +452,7 @@ export default function PurchaseOrderDetail() {
           qbPushedAt={po.qbPushedAt}
           qbBillUrl={po.qbBillUrl}
         />
+        {po.blanket ? <BlanketPoCard blanket={po.blanket} /> : null}
 
         {po.status === "rejected" ? (
           <Banner tone="critical" title="Rejected by supplier">

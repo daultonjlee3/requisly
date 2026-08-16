@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
-import { useActionData, useLoaderData } from "@remix-run/react";
-import { Page } from "@shopify/polaris";
+import { useActionData, useLoaderData, useSearchParams } from "@remix-run/react";
+import { Banner, BlockStack, Page } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
 import { TemplateForm } from "../components/TemplateForm";
 import { getMerchantContext } from "../lib/merchant.server";
@@ -9,6 +9,7 @@ import {
   updatePoTemplate,
   type TemplateStatus,
 } from "../lib/po-templates.server";
+import { parseScheduleFromForm } from "../lib/recurring-po";
 import { loadNewPoFormData } from "../lib/purchase-orders.server";
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
@@ -56,6 +57,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       paymentTerms: String(formData.get("payment_terms") ?? ""),
       status: String(formData.get("status") ?? "active") as TemplateStatus,
       lines,
+      schedule: parseScheduleFromForm(formData),
     });
     return merchant.redirect(`/app/templates/${templateId}`);
   } catch (err) {
@@ -75,11 +77,16 @@ export default function EditTemplate() {
     priorCosts,
   } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
+  const [searchParams] = useSearchParams();
+  const fromCadence = searchParams.get("from_cadence") === "1";
+  const existingRecurring = searchParams.get("existing_recurring") === "1";
 
   return (
     <Page
       title={template.name}
-      subtitle={`${template.supplierName} · ${template.lastUsedLabel}`}
+      subtitle={`${template.supplierName} · ${template.lastUsedLabel}${
+        template.schedule.enabled ? ` · ${template.schedule.nextRunOn ? `Next draft ${template.schedule.nextRunOn}` : "Scheduled"}` : ""
+      }`}
       backAction={{ content: "Templates", url: "/app/templates" }}
       primaryAction={{
         content: "Use template",
@@ -93,7 +100,24 @@ export default function EditTemplate() {
       ]}
     >
       <TitleBar title={template.name} />
-      <TemplateForm
+      <BlockStack gap="400">
+        {fromCadence ? (
+          <Banner tone="success" title="Recurring PO created from cadence">
+            <p>
+              Review the lines and schedule. On the next draft date we will
+              create a draft PO only — it will never be sent automatically.
+            </p>
+          </Banner>
+        ) : null}
+        {existingRecurring ? (
+          <Banner tone="info" title="This supplier already has a recurring PO">
+            <p>
+              We opened the existing scheduled template instead of creating
+              another.
+            </p>
+          </Banner>
+        ) : null}
+        <TemplateForm
         suppliers={suppliers}
         locations={locations}
         shopifyVariants={shopifyVariants}
@@ -108,6 +132,7 @@ export default function EditTemplate() {
           notes: template.notes ?? "",
           paymentTerms: template.paymentTerms ?? "",
           status: template.status,
+          schedule: template.schedule,
           lines: template.lines.map((line) => ({
             key: line.id,
             description: line.description,
@@ -120,7 +145,9 @@ export default function EditTemplate() {
         }}
         error={actionData?.error}
         submitLabel="Save template"
+        scheduleLastError={template.scheduleLastError}
       />
+      </BlockStack>
     </Page>
   );
 }

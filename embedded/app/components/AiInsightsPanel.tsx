@@ -101,6 +101,14 @@ function InsightRow(props: { insight: AiInsightRow }) {
             Open PO
           </Button>
         ) : null}
+        {insight.insight_type === "reorder_cadence" && insight.supplier_id ? (
+          <Form method="post" action="/app/templates/from-cadence">
+            <input type="hidden" name="insightId" value={insight.id} />
+            <Button submit variant="primary">
+              Turn this into a recurring PO
+            </Button>
+          </Form>
+        ) : null}
         <Form method="post">
           <input type="hidden" name="intent" value="dismiss_insight" />
           <input type="hidden" name="insightId" value={insight.id} />

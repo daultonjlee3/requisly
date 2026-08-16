@@ -9,6 +9,8 @@ import {
   createPoTemplate,
   getPoTemplateDetail,
 } from "../lib/po-templates.server";
+import { parseScheduleFromForm } from "../lib/recurring-po";
+import { DEFAULT_SCHEDULE } from "../lib/recurring-po";
 import { loadNewPoFormData } from "../lib/purchase-orders.server";
 import { createServiceClient } from "../lib/supabase.server";
 
@@ -32,6 +34,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     notes: string;
     paymentTerms: string;
     status: "active";
+    schedule: typeof DEFAULT_SCHEDULE;
     lines: Array<{
       key: string;
       description: string;
@@ -50,6 +53,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     notes: "",
     paymentTerms: "",
     status: "active",
+    schedule: DEFAULT_SCHEDULE,
     lines: [],
   };
 
@@ -68,6 +72,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         notes: detail.notes ?? "",
         paymentTerms: detail.paymentTerms ?? "",
         status: "active",
+        schedule: { ...detail.schedule, enabled: false },
         lines: detail.lines.map((line) => ({
           key: randomUUID(),
           description: line.description,
@@ -109,6 +114,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         notes: po.notes ?? "",
         paymentTerms: po.payment_terms ?? "",
         status: "active",
+        schedule: DEFAULT_SCHEDULE,
         lines: lines.map((line) => ({
           key: randomUUID(),
           description: line.description,
@@ -160,6 +166,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       createdByLabel: merchant.shopName,
       sourcePoId: String(formData.get("source_po_id") ?? "") || null,
       lines,
+      schedule: parseScheduleFromForm(formData),
     });
     return merchant.redirect(`/app/templates/${created.id}`);
   } catch (err) {

@@ -292,6 +292,7 @@ export default function TemplatesIndex() {
                 { title: "Name" },
                 { title: "Supplier" },
                 { title: "Products" },
+                { title: "Schedule" },
                 { title: "Last used" },
                 { title: "Status" },
                 { title: "Actions" },
@@ -316,6 +317,15 @@ export default function TemplatesIndex() {
                   </IndexTable.Cell>
                   <IndexTable.Cell>{template.supplierName}</IndexTable.Cell>
                   <IndexTable.Cell>{template.productCount}</IndexTable.Cell>
+                  <IndexTable.Cell>
+                    {template.scheduleEnabled ? (
+                      <Badge tone="info">{template.scheduleLabel}</Badge>
+                    ) : (
+                      <Text as="span" tone="subdued">
+                        —
+                      </Text>
+                    )}
+                  </IndexTable.Cell>
                   <IndexTable.Cell>{template.lastUsedLabel}</IndexTable.Cell>
                   <IndexTable.Cell>
                     {template.status === "archived" ? (

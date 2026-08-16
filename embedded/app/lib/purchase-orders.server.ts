@@ -25,6 +25,11 @@ import {
   type ThreeWayMatch,
 } from "./three-way-match";
 import { billDeepLink } from "./quickbooks.server";
+import {
+  getBlanketSummaryForPo,
+  listBlanketPickerOptions,
+  syncBlanketDrawdownForPo,
+} from "./blanket-pos.server";
 
 export type { NewPoFormData, NewPoSupplierProduct };
 
@@ -139,6 +144,18 @@ export type PurchaseOrderDetail = {
   qbBillId: string | null;
   qbBillUrl: string | null;
   threeWayMatch: ThreeWayMatch;
+  blanket: {
+    id: string;
+    blanketNumber: string;
+    title: string;
+    remainingLabel: string;
+    statusLabel: string;
+    qtyDrawn: number;
+    valueDrawn: number;
+    qtyLabel: string;
+    valueLabel: string;
+    reversed: boolean;
+  } | null;
 };
 
 type CreateLineInput = {
@@ -446,6 +463,11 @@ export async function getPurchaseOrderDetail(
         return { id: line.id, qty: Number(line.qty) || 0, qtyReceived };
       }),
     }),
+    blanket: await getBlanketSummaryForPo(
+      workspaceId,
+      (po.blanket_po_id as string | null) ?? null,
+      poId,
+    ),
   };
 }
 
@@ -566,7 +588,10 @@ export async function loadNewPoFormData(
     }),
   );
 
-  const priorCosts = await loadPriorUnitCosts(workspaceId);
+  const [priorCosts, blankets] = await Promise.all([
+    loadPriorUnitCosts(workspaceId),
+    listBlanketPickerOptions(workspaceId),
+  ]);
 
   return {
     suppliers: (suppliers ?? []).map((s) => ({
@@ -583,6 +608,7 @@ export async function loadNewPoFormData(
     shopifyVariants,
     priorCosts,
     defaultSupplierId: defaultSupplierId ?? null,
+    blankets,
   };
 }
 
@@ -657,6 +683,10 @@ export async function createPurchaseOrder(opts: {
   lines: CreateLineInput[];
   /** Timeline metadata.source — e.g. embedded_create | ai_procurement_agent */
   source?: string;
+  /** Template this draft was created from (manual or recurring). */
+  sourceTemplateId?: string | null;
+  /** Optional blanket this draft draws down against. Never auto-sends. */
+  blanketPoId?: string | null;
 }): Promise<{ id: string; poNumber: string }> {
   const { workspaceId, supplierId, locationId, requestedShipDate, notes } =
     opts;
@@ -701,6 +731,8 @@ export async function createPurchaseOrder(opts: {
       subtotal,
       total: rollupTotal(subtotal, taxAmount, shippingAmount, adjustmentAmount),
       created_by: null,
+      source_template_id: opts.sourceTemplateId || null,
+      blanket_po_id: opts.blanketPoId || null,
     })
     .select("id")
     .single();
@@ -728,9 +760,20 @@ export async function createPurchaseOrder(opts: {
     metadata: {
       source: opts.source ?? "embedded_create",
       ai_suggested: opts.source === "ai_procurement_agent",
+      auto_sent: false,
+      template_id: opts.sourceTemplateId || null,
     },
   });
   if (eventError) throw new Error(eventError.message);
+
+  if (opts.blanketPoId) {
+    try {
+      await syncBlanketDrawdownForPo(workspaceId, po.id);
+    } catch (err) {
+      await supabase.from("purchase_orders").delete().eq("id", po.id);
+      throw err;
+    }
+  }
 
   return { id: po.id, poNumber };
 }
@@ -1102,6 +1145,8 @@ export async function updateOpenPurchaseOrder(opts: {
     });
   }
 
+  await syncBlanketDrawdownForPo(opts.workspaceId, opts.poId);
+
   return { confirmationStale };
 }
 
@@ -1141,6 +1186,8 @@ export async function updatePoCommercialFields(opts: {
     })
     .eq("id", opts.poId);
   if (updateError) throw new Error(updateError.message);
+
+  await syncBlanketDrawdownForPo(opts.workspaceId, opts.poId);
 }
 
 export async function updatePoArrivalDate(opts: {
@@ -1271,6 +1318,8 @@ export async function cancelPurchaseOrder(opts: {
     },
   });
   if (eventError) throw new Error(eventError.message);
+
+  await syncBlanketDrawdownForPo(opts.workspaceId, opts.poId);
 }
 
 export async function resolveProposal(opts: {
@@ -1362,6 +1411,10 @@ export async function resolveProposal(opts: {
     })
     .eq("id", proposal.id);
   if (resolveErr) throw new Error(resolveErr.message);
+
+  if (opts.accept) {
+    await syncBlanketDrawdownForPo(opts.workspaceId, po.id);
+  }
 
   return { poId: po.id };
 }

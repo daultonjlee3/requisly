@@ -5,6 +5,7 @@ import { TitleBar } from "@shopify/app-bridge-react";
 import { CreatePoForm } from "../components/CreatePoForm";
 import { StartFromTemplate } from "../components/StartFromTemplate";
 import { getMerchantContext } from "../lib/merchant.server";
+import { getBlanketDetail } from "../lib/blanket-pos.server";
 import {
   createPurchaseOrder,
   loadNewPoFormData,
@@ -21,6 +22,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const merchant = await getMerchantContext(request, { sync: "auto" });
   const url = new URL(request.url);
   const templateId = url.searchParams.get("template");
+  const blanketId = url.searchParams.get("blanket");
   const formData = await loadNewPoFormData(
     merchant.workspace.id,
     url.searchParams.get("supplier"),
@@ -28,9 +30,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const templateSuggestions = await listTemplatePickerSuggestions(
     merchant.workspace.id,
   );
-  const initial = templateId
+  let initial = templateId
     ? await templateToCreatePoInitial(merchant.workspace.id, templateId)
     : null;
+  if (blanketId) {
+    const blanket = await getBlanketDetail(merchant.workspace.id, blanketId);
+    if (blanket) {
+      initial = {
+        ...(initial ?? {}),
+        supplierId: blanket.supplierId,
+        blanketPoId: blanket.id,
+      };
+    }
+  }
 
   timer.end({ catalogSyncPending: merchant.catalogSyncPending });
 
@@ -65,8 +77,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         String(formData.get("reference_number") ?? "").trim() || null,
       taxAmount: Number(formData.get("tax_amount") ?? 0) || 0,
       shippingAmount: Number(formData.get("shipping_amount") ?? 0) || 0,
-      adjustmentAmount: Number(formData.get("adjustment_amount") ?? 0) || 0,
+        adjustmentAmount: Number(formData.get("adjustment_amount") ?? 0) || 0,
       lines,
+      sourceTemplateId: templateId || null,
+      blanketPoId: String(formData.get("blanket_po_id") ?? "").trim() || null,
     });
     if (templateId) {
       await recordTemplateUse(merchant.workspace.id, templateId);

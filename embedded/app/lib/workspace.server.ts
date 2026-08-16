@@ -142,6 +142,12 @@ async function createWorkspaceForShop(opts: {
       enabled: true,
       threshold_value: null,
     },
+    {
+      workspace_id: workspace.id,
+      rule_type: "contract_renewal",
+      enabled: true,
+      threshold_value: 30,
+    },
   ]);
   if (rulesErr) throw new Error(rulesErr.message);
 

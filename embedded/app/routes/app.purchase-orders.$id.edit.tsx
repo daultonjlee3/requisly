@@ -85,6 +85,17 @@ export default function EditPurchaseOrder() {
       }}
     >
       <TitleBar title={`Edit ${po.poNumber}`} />
+      {po.blanket ? (
+        <Banner
+          tone="info"
+          title={`${po.blanket.blanketNumber} · ${po.blanket.remainingLabel} remaining`}
+        >
+          <p>
+            This PO draws down against the blanket. Saving adjusts remaining
+            quantity and value. Over-draw is blocked.
+          </p>
+        </Banner>
+      ) : null}
       {!isDraft ? (
         <Banner tone="warning" title="Editing an open purchase order">
           <p>
@@ -104,6 +115,7 @@ export default function EditPurchaseOrder() {
         error={actionData?.error}
         syncError={syncError}
         lockSupplier
+        showBlanketSelect={false}
         submitLabel="Save changes"
         initial={{
           supplierId: po.supplier.id,
