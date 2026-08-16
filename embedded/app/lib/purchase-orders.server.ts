@@ -20,6 +20,11 @@ import {
   type PoStatus,
   type TimelineEvent,
 } from "./po-status";
+import {
+  buildThreeWayMatch,
+  type ThreeWayMatch,
+} from "./three-way-match";
+import { billDeepLink } from "./quickbooks.server";
 
 export type { NewPoFormData, NewPoSupplierProduct };
 
@@ -129,6 +134,11 @@ export type PurchaseOrderDetail = {
     dateLabel: string;
     metadata: string | null;
   }>;
+  invoiceAmountRaw: number | null;
+  qbPushedAt: string | null;
+  qbBillId: string | null;
+  qbBillUrl: string | null;
+  threeWayMatch: ThreeWayMatch;
 };
 
 type CreateLineInput = {
@@ -281,7 +291,7 @@ export async function getPurchaseOrderDetail(
 
   const { data: receiptRows } = await supabase
     .from("receipts")
-    .select("id, note, created_at, receipt_line_items(qty_received)")
+    .select("id, note, created_at, receipt_line_items(qty_received, po_line_item_id)")
     .eq("po_id", poId)
     .eq("workspace_id", workspaceId)
     .order("created_at", { ascending: false });
@@ -408,6 +418,33 @@ export async function getPurchaseOrderDetail(
         dateLabel: shortDate(event.occurred_at),
         metadata: summary ?? fallback,
       };
+    }),
+    invoiceAmountRaw:
+      po.invoice_amount == null ? null : Number(po.invoice_amount),
+    qbPushedAt: (po.qb_pushed_at as string | null) ?? null,
+    qbBillId: (po.qb_bill_id as string | null) ?? null,
+    qbBillUrl: (po.qb_bill_id as string | null)
+      ? billDeepLink(po.qb_bill_id as string)
+      : null,
+    threeWayMatch: buildThreeWayMatch({
+      poTotal: Number(po.total) || 0,
+      invoiceAmount:
+        po.invoice_amount == null ? null : Number(po.invoice_amount),
+      lines: lines.map((line) => {
+        let qtyReceived = 0;
+        for (const receipt of receiptRows ?? []) {
+          const items = (receipt.receipt_line_items ?? []) as Array<{
+            po_line_item_id?: string;
+            qty_received: number;
+          }>;
+          for (const item of items) {
+            if (item.po_line_item_id === line.id) {
+              qtyReceived += item.qty_received || 0;
+            }
+          }
+        }
+        return { id: line.id, qty: Number(line.qty) || 0, qtyReceived };
+      }),
     }),
   };
 }
@@ -1327,6 +1364,49 @@ export async function resolveProposal(opts: {
   if (resolveErr) throw new Error(resolveErr.message);
 
   return { poId: po.id };
+}
+
+export async function submitPoInvoiceAmount(opts: {
+  workspaceId: string;
+  poId: string;
+  invoiceAmount: number;
+}): Promise<void> {
+  if (!Number.isFinite(opts.invoiceAmount) || opts.invoiceAmount < 0) {
+    throw new Error("Enter a valid invoiced amount");
+  }
+  const supabase = createServiceClient();
+  const { data: po, error } = await supabase
+    .from("purchase_orders")
+    .select("id, status, total")
+    .eq("id", opts.poId)
+    .eq("workspace_id", opts.workspaceId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!po) throw new Error("Purchase order not found");
+
+  const amount = Number(opts.invoiceAmount.toFixed(2));
+  const { error: updateError } = await supabase
+    .from("purchase_orders")
+    .update({
+      invoice_amount: amount,
+      invoice_submitted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", opts.poId)
+    .eq("workspace_id", opts.workspaceId);
+  if (updateError) throw new Error(updateError.message);
+
+  const { error: eventError } = await supabase.from("po_timeline_events").insert({
+    po_id: opts.poId,
+    event_type: po.status,
+    actor: "merchant",
+    metadata: {
+      kind: "invoice_submitted",
+      summary: `Invoiced amount recorded: ${money(amount)} (PO total ${money(po.total)})`,
+      invoice_amount: amount,
+    },
+  });
+  if (eventError) throw new Error(eventError.message);
 }
 
 export async function listCalendarPurchaseOrders(workspaceId: string) {

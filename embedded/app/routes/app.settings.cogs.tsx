@@ -135,20 +135,18 @@ export default function CogsSettingsPage() {
         <Card>
           <BlockStack gap="200">
             <Text as="h2" variant="headingMd">
-              QuickBooks push (when connected)
+              QuickBooks push
             </Text>
             <Text as="p" tone="subdued">
-              QuickBooks sync is not live yet. When it ships, the push
-              mapping-mode setting will note that{" "}
-              <Text as="span" fontWeight="semibold">
-                account-level mapping
-              </Text>{" "}
-              avoids QuickBooks calculating its own COGS at all — for merchants
-              who want Requisly&apos;s number to be the sole source of truth.
-              Product/item-level inventory mapping can still let QuickBooks
-              compute COGS independently, which is why method matching (above)
-              matters for closest-comparison mode.
+              Requisly does not reconcile with QuickBooks&apos; own COGS.
+              Different valuation methods (FIFO vs weighted average) mean the
+              numbers may legitimately differ. Account-level mapping avoids
+              QuickBooks calculating COGS at all; item-level mapping can still
+              let QuickBooks compute independently.
             </Text>
+            <Button url="/app/settings/quickbooks">
+              Open QuickBooks settings
+            </Button>
           </BlockStack>
         </Card>
       </BlockStack>

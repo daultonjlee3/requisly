@@ -36,6 +36,7 @@ import { PendingProposalsPanel } from "../components/PendingProposalsPanel";
 import { PoDocumentsCard } from "../components/PoDocumentsCard";
 import { PoShipmentsCard } from "../components/PoShipmentsCard";
 import { SaveAsTemplateCard } from "../components/SaveAsTemplateCard";
+import { ThreeWayMatchCard } from "../components/ThreeWayMatchCard";
 import {
   generateAndStorePoPdf,
   listPoDocuments,
@@ -57,6 +58,7 @@ import {
   getPurchaseOrderDetail,
   resolveProposal,
   sendPurchaseOrder,
+  submitPoInvoiceAmount,
   updatePoArrivalDate,
   updatePoCommercialFields,
 } from "../lib/purchase-orders.server";
@@ -161,6 +163,19 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
         accept: intent === "accept_proposal",
       });
       return merchant.redirect(`/app/purchase-orders/${poId}`);
+    }
+    if (intent === "submit_invoice") {
+      const raw = String(formData.get("invoice_amount") ?? "").trim();
+      const amount = Number(raw.replace(/[$,\s]/g, ""));
+      await submitPoInvoiceAmount({
+        workspaceId: merchant.workspace.id,
+        poId,
+        invoiceAmount: amount,
+      });
+      return merchant.redirect(`/app/purchase-orders/${poId}`);
+    }
+    if (intent === "push_quickbooks") {
+      return merchant.redirect(`/app/purchase-orders/${poId}/quickbooks`);
     }
     if (intent === "generate_pdf") {
       await generateAndStorePoPdf({
@@ -396,6 +411,12 @@ export default function PurchaseOrderDetail() {
           </Banner>
         ) : null}
 
+        {po.threeWayMatch.ready && po.threeWayMatch.hasDiscrepancy ? (
+          <Banner tone="warning" title="3-way discrepancy">
+            <p>{po.threeWayMatch.summary}</p>
+          </Banner>
+        ) : null}
+
         <InlineStack align="end" gap="200">
           <Form method="post">
             <input type="hidden" name="intent" value="duplicate" />
@@ -422,6 +443,14 @@ export default function PurchaseOrderDetail() {
         </InlineStack>
 
         <PendingProposalsPanel proposals={po.pendingProposals} />
+        <ThreeWayMatchCard
+          poId={po.id}
+          status={po.status}
+          match={po.threeWayMatch}
+          invoiceAmountRaw={po.invoiceAmountRaw}
+          qbPushedAt={po.qbPushedAt}
+          qbBillUrl={po.qbBillUrl}
+        />
 
         {po.status === "rejected" ? (
           <Banner tone="critical" title="Rejected by supplier">

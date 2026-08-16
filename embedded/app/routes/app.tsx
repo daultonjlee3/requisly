@@ -121,6 +121,7 @@ export default function App() {
           <Link to="/app/settings/team">Team</Link>
           <Link to="/app/settings/notifications">Notifications</Link>
           <Link to="/app/settings/cogs">COGS</Link>
+          <Link to="/app/settings/quickbooks">QuickBooks</Link>
         </NavMenu>
         {billingSkipped ? (
           <Box padding="400" paddingBlockEnd="0">
