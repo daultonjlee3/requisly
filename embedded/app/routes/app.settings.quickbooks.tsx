@@ -16,7 +16,8 @@ import {
   Text,
 } from "@shopify/polaris";
 import { TitleBar } from "@shopify/app-bridge-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { QuickBooksItemMappingList, initialItemMappings } from "../components/QuickBooksItemMappingList";
 import { getMerchantContext } from "../lib/merchant.server";
 import {
   QboReconnectNeededError,
@@ -25,6 +26,8 @@ import {
   getQboConnection,
   getQboSettings,
   listQboExpenseAccounts,
+  loadQboProductMappings,
+  saveProductItemMappings,
   saveQboSettings,
 } from "../lib/quickbooks.server";
 import type { QboMappingMode } from "../lib/quickbooks-map";
@@ -37,15 +40,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     getQboSettings(merchant.workspace.id),
   ]);
   let accounts: Array<{ id: string; name: string }> = [];
+  let products: Awaited<ReturnType<typeof loadQboProductMappings>>["products"] = [];
+  let qboItems: Awaited<ReturnType<typeof loadQboProductMappings>>["items"] = [];
+  let truncated = false;
   let catalogError: string | null = null;
   if (config.configured && connection.connected && !connection.reconnectNeeded) {
     try {
-      accounts = await listQboExpenseAccounts(merchant.workspace.id);
+      const [accountRows, mappingPage] = await Promise.all([
+        listQboExpenseAccounts(merchant.workspace.id),
+        loadQboProductMappings(merchant.workspace.id),
+      ]);
+      accounts = accountRows;
+      products = mappingPage.products;
+      qboItems = mappingPage.items;
+      truncated = mappingPage.truncated;
     } catch (err) {
       catalogError =
         err instanceof QboReconnectNeededError || err instanceof Error
           ? err.message
-          : "Could not load QuickBooks accounts.";
+          : "Could not load QuickBooks lists.";
     }
   }
   return {
@@ -59,6 +72,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     connection,
     settings,
     accounts,
+    products,
+    qboItems,
+    truncated,
     catalogError,
     connectedQuery: new URL(request.url).searchParams.get("connected") === "1",
   };
@@ -82,6 +98,27 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         defaultExpenseAccountId: accountId || null,
         defaultExpenseAccountName: accountName || null,
       });
+      const raw = String(form.get("item_mappings_json") ?? "[]");
+      if (mappingMode === "item") {
+        let parsed: Array<{
+          supplierProductId?: string;
+          qboId?: string;
+          qboName?: string;
+        }> = [];
+        try {
+          parsed = JSON.parse(raw) as typeof parsed;
+        } catch {
+          throw new Error("Product mapping payload is invalid.");
+        }
+        await saveProductItemMappings(
+          merchant.workspace.id,
+          parsed.map((row) => ({
+            supplierProductId: String(row.supplierProductId ?? ""),
+            qboId: String(row.qboId ?? ""),
+            qboName: String(row.qboName ?? ""),
+          })),
+        );
+      }
       return { ok: true, error: null as string | null };
     }
     return { ok: false, error: "Unknown action" };
@@ -100,6 +137,9 @@ export default function QuickBooksSettingsPage() {
     connection,
     settings,
     accounts,
+    products,
+    qboItems,
+    truncated,
     catalogError,
     connectedQuery,
   } = useLoaderData<typeof loader>();
@@ -117,11 +157,25 @@ export default function QuickBooksSettingsPage() {
   const [accountId, setAccountId] = useState(
     settings.defaultExpenseAccountId ?? "",
   );
+  const [itemMappings, setItemMappings] = useState(() =>
+    initialItemMappings(products, qboItems),
+  );
 
   const accountName =
     accounts.find((row) => row.id === accountId)?.name ??
     settings.defaultExpenseAccountName ??
     "";
+  const itemMappingsJson = useMemo(
+    () =>
+      JSON.stringify(
+        products.map((product) => ({
+          supplierProductId: product.id,
+          qboId: itemMappings[product.id]?.id ?? "",
+          qboName: itemMappings[product.id]?.name ?? "",
+        })),
+      ),
+    [products, itemMappings],
+  );
 
   return (
     <Page title="QuickBooks" subtitle={workspaceName}>
@@ -243,7 +297,7 @@ export default function QuickBooksSettingsPage() {
                     label: "Item-level",
                     value: "item",
                     helpText:
-                      "Confirm or create a QuickBooks item per product. Remembered after the first push. QuickBooks may then calculate COGS independently — Requisly will not reconcile that number.",
+                      "Map each catalog product to a QuickBooks item below. Saved mappings are reused on every push. QuickBooks may then calculate COGS independently — Requisly will not reconcile that number.",
                   },
                 ]}
                 selected={[mappingMode]}
@@ -265,10 +319,25 @@ export default function QuickBooksSettingsPage() {
                 disabled={!accounts.length}
                 helpText={
                   accounts.length
-                    ? undefined
+                    ? "Also used for free-text lines, tax/shipping, and new items created on a push."
                     : "Connect QuickBooks to load accounts."
                 }
               />
+              {mappingMode === "item" ? (
+                <QuickBooksItemMappingList
+                  products={products}
+                  items={qboItems}
+                  truncated={truncated}
+                  mappings={itemMappings}
+                  onChange={(supplierProductId, item) =>
+                    setItemMappings((prev) => ({
+                      ...prev,
+                      [supplierProductId]: item,
+                    }))
+                  }
+                />
+              ) : null}
+              <input type="hidden" name="item_mappings_json" value={itemMappingsJson} />
               <Button submit variant="primary" loading={saving}>
                 Save mapping defaults
               </Button>

@@ -5,6 +5,7 @@ import {
   parseQboFault,
   qboBillUrl,
   type QboMappingMode,
+  type QboCatalogProduct,
   type QboNamedRef,
 } from "./quickbooks-map";
 import {
@@ -721,6 +722,82 @@ export async function getProductItemMappings(
     });
   }
   return map;
+}
+
+export async function loadQboProductMappings(workspaceId: string): Promise<{
+  products: QboCatalogProduct[];
+  items: QboNamedRef[];
+  truncated: boolean;
+}> {
+  const supabase = createServiceClient();
+  const { data, error } = await supabase
+    .from("supplier_products")
+    .select("id, title, sku, suppliers(name)")
+    .eq("workspace_id", workspaceId)
+    .order("title")
+    .limit(500);
+  if (error) throw new Error(error.message);
+  const truncated = (data ?? []).length >= 500;
+  const productsRaw = (data ?? []).map((row) => {
+    const supplier = row.suppliers as unknown as { name: string } | { name: string }[] | null;
+    const supplierName = Array.isArray(supplier)
+      ? supplier[0]?.name ?? "—"
+      : supplier?.name ?? "—";
+    return {
+      id: row.id as string,
+      title: (row.title as string) || "Untitled",
+      sku: (row.sku as string) || "",
+      supplierName,
+    };
+  });
+  const [items, mappings] = await Promise.all([
+    listQboItems(workspaceId),
+    getProductItemMappings(
+      workspaceId,
+      productsRaw.map((row) => row.id),
+    ),
+  ]);
+  return {
+    items,
+    truncated,
+    products: productsRaw.map((row) => ({
+      ...row,
+      mapped: mappings.get(row.id) ?? null,
+    })),
+  };
+}
+
+export async function saveProductItemMappings(
+  workspaceId: string,
+  mappings: Array<{ supplierProductId: string; qboId: string; qboName: string }>,
+): Promise<void> {
+  const supabase = createServiceClient();
+  const keep = mappings.filter((row) => row.supplierProductId && row.qboId);
+  const clear = mappings.filter((row) => row.supplierProductId && !row.qboId);
+  if (clear.length) {
+    const { error } = await supabase
+      .from("product_quickbooks_items")
+      .delete()
+      .eq("workspace_id", workspaceId)
+      .in(
+        "supplier_product_id",
+        clear.map((row) => row.supplierProductId),
+      );
+    if (error) throw new Error(error.message);
+  }
+  if (!keep.length) return;
+  const now = new Date().toISOString();
+  const { error } = await supabase.from("product_quickbooks_items").upsert(
+    keep.map((row) => ({
+      workspace_id: workspaceId,
+      supplier_product_id: row.supplierProductId,
+      qbo_item_id: row.qboId,
+      qbo_item_name: row.qboName,
+      updated_at: now,
+    })),
+    { onConflict: "workspace_id,supplier_product_id" },
+  );
+  if (error) throw new Error(error.message);
 }
 
 export async function saveProductItemMapping(opts: {

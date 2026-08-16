@@ -7,6 +7,14 @@ export type QboNamedRef = {
   name: string;
 };
 
+export type QboCatalogProduct = {
+  id: string;
+  title: string;
+  sku: string;
+  supplierName: string;
+  mapped: QboNamedRef | null;
+};
+
 export type QboVendorMatch = {
   exact: QboNamedRef | null;
   suggestions: Array<QboNamedRef & { score: number }>;
@@ -111,6 +119,23 @@ export function matchQboVendor(
     .slice(0, 8);
 
   return { exact, suggestions };
+}
+
+export function matchQboItem(
+  product: { title: string; sku?: string | null },
+  items: QboNamedRef[],
+): QboNamedRef | null {
+  const title = product.title.trim().toLowerCase();
+  const sku = product.sku?.trim().toLowerCase() ?? "";
+  if (!title && !sku) return null;
+  for (const item of items) {
+    const name = item.name.trim().toLowerCase();
+    if (title && name === title) return item;
+    if (sku && (name === sku || name.endsWith(`:${sku}`) || name.endsWith(` ${sku}`))) {
+      return item;
+    }
+  }
+  return null;
 }
 
 export function suggestedLineMappingType(opts: {
