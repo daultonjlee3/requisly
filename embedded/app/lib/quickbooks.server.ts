@@ -4,12 +4,14 @@ import {
   isInvalidGrant,
   parseQboFault,
   qboBillUrl,
-  signQboOauthState,
-  verifyQboOauthState,
   type QboMappingMode,
   type QboNamedRef,
-  type QboOauthStatePayload,
 } from "./quickbooks-map";
+import {
+  signQboOauthState,
+  verifyQboOauthState,
+  type QboOauthStatePayload,
+} from "./quickbooks-oauth.server";
 
 const QBO_MINORVERSION = "75";
 const TOKEN_URL = "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer";
