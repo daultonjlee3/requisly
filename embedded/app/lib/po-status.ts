@@ -11,7 +11,8 @@ export type PoStatus =
   | "received"
   | "closed"
   | "rejected"
-  | "cancelled";
+  | "cancelled"
+  | "email_reply";
 
 export type TimelineEvent = {
   id: string;
@@ -47,6 +48,7 @@ export const KANBAN_COLUMNS = TIMELINE_STEPS;
 const ORDER = TIMELINE_STEPS.map((s) => s.key);
 
 export function statusLabel(status: PoStatus): string {
+  if (status === "email_reply") return "Supplier reply";
   return TIMELINE_STEPS.find((s) => s.key === status)?.label ?? status;
 }
 

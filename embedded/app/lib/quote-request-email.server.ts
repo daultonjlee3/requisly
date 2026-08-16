@@ -1,13 +1,10 @@
 /**
  * Outbound RFQ email — same Resend + Reply-To pattern as PO supplier email.
  */
-import { inboundReplyToAddress } from "./po-supplier-email.server";
+import { inboundMailboxDomain } from "./po-supplier-email.server";
 
 export function rfqInboundReplyToAddress(token: string): string {
-  // Reuse plus-address shape; prefix rfq+ so inbound can route to quote parser.
-  const domain =
-    process.env.RESEND_INBOUND_DOMAIN?.trim() || "inbound.requisly.com";
-  return `rfq+${token}@${domain}`;
+  return `rfq+${token}@${inboundMailboxDomain()}`;
 }
 
 export async function sendQuoteRequestEmail(opts: {
@@ -83,9 +80,6 @@ export async function sendQuoteRequestEmail(opts: {
     const body = await res.text();
     throw new Error(`RFQ email failed: ${res.status} ${body}`);
   }
-
-  // Keep inboundReplyToAddress imported for PO parity reference (rfq+ vs po+).
-  void inboundReplyToAddress;
 }
 
 function escapeHtml(s: string) {

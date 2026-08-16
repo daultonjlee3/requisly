@@ -10,7 +10,8 @@ export type PoStatus =
   | "received"
   | "closed"
   | "rejected"
-  | "cancelled";
+  | "cancelled"
+  | "email_reply";
 
 export type LineItemProposal = {
   id: string;

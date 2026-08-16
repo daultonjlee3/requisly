@@ -628,11 +628,18 @@ export default function PurchaseOrderDetail() {
                               {event.dateLabel}
                             </Text>
                           </Text>
-                          {event.metadata ? (
-                            <Text as="p" variant="bodySm" tone="subdued">
-                              {event.metadata}
-                            </Text>
-                          ) : null}
+                          {event.metadata
+                            ? event.metadata.split("\n").map((line, index) => (
+                                <Text
+                                  as="p"
+                                  variant="bodySm"
+                                  tone="subdued"
+                                  key={`${event.id}-${index}`}
+                                >
+                                  {line || " "}
+                                </Text>
+                              ))
+                            : null}
                         </BlockStack>
                       ))}
                     </BlockStack>
@@ -885,7 +892,7 @@ export default function PurchaseOrderDetail() {
                             po.supplier.email ||
                             "supplier"}{" "}
                           with one-click actions and Reply-To on
-                          inbound.requisly.com.
+                          requisly.com.
                         </p>
                       </Banner>
                     ) : actionData?.emailError ? (

@@ -1,7 +1,7 @@
 /**
  * Outbound PO email to suppliers (Resend).
  * HTML/text live in src/lib/po-supplier-email.ts (not Polaris).
- * Reply-To uses inbound.requisly.com (MX must be configured in DNS).
+ * Reply-To is po+{token}@requisly.com (Resend receiving is on the apex).
  */
 import {
   buildPoSupplierEmailHtml,
@@ -9,14 +9,19 @@ import {
   buildPoSupplierEmailText,
   poEmailFromAddress,
   type PoEmailLine,
+  type PoEmailTotals,
 } from "../../../src/lib/po-supplier-email";
 
-export type { PoEmailLine };
+export type { PoEmailLine, PoEmailTotals };
+
+export function inboundMailboxDomain(): string {
+  const raw = process.env.RESEND_INBOUND_DOMAIN?.trim();
+  if (!raw || raw === "inbound.requisly.com") return "requisly.com";
+  return raw;
+}
 
 export function inboundReplyToAddress(supplierLinkToken: string): string {
-  const domain =
-    process.env.RESEND_INBOUND_DOMAIN?.trim() || "inbound.requisly.com";
-  return `po+${supplierLinkToken}@${domain}`;
+  return `po+${supplierLinkToken}@${inboundMailboxDomain()}`;
 }
 
 export {
@@ -33,10 +38,12 @@ export async function sendPoSupplierEmail(opts: {
   supplierName: string;
   shipDateLabel: string | null;
   lines: PoEmailLine[];
+  totals: PoEmailTotals;
   confirmAsIsUrl: string | null;
   markShippedUrl: string | null;
   supplierLinkUrl: string | null;
   pdfUrl: string | null;
+  csvUrl: string | null;
   replyTo: string;
 }): Promise<{ sent: boolean; error?: string }> {
   const resendKey = process.env.RESEND_API_KEY;
@@ -53,10 +60,12 @@ export async function sendPoSupplierEmail(opts: {
     supplierName: opts.supplierName,
     shipDateLabel: opts.shipDateLabel,
     lines: opts.lines,
+    totals: opts.totals,
     confirmAsIsUrl: opts.confirmAsIsUrl,
     markShippedUrl: opts.markShippedUrl,
     supplierLinkUrl: opts.supplierLinkUrl,
     pdfUrl: opts.pdfUrl,
+    csvUrl: opts.csvUrl,
   };
 
   const from = poEmailFromAddress(

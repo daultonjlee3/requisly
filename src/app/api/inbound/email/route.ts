@@ -4,33 +4,102 @@ import {
   matchParsedQuotesToLines,
   parseSupplierQuoteReply,
 } from "@/lib/email-reply-parse";
+import { handlePoInboundReply } from "@/lib/po-inbound-reply.server";
+import {
+  bareEmail,
+  collectAddresses,
+  extractEmailId,
+  fetchReceivedEmail,
+  firstInboundPlusAddress,
+  verifyResendWebhook,
+} from "@/lib/resend-webhook";
 
 /**
- * Resend inbound webhook for RFQ (and future PO) email replies.
- * Expects To: rfq+{token}@inbound… or po+{token}@…
+ * Resend inbound webhook. Subscribe to email.received →
+ * https://requisly.com/api/inbound/email
  *
- * Env: RESEND_WEBHOOK_SECRET (optional verify), SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+ * Webhook payloads are metadata-only. Body is fetched from
+ * GET /emails/receiving/:email_id.
+ *
+ * Env: RESEND_API_KEY, RESEND_WEBHOOK_SECRET, ANTHROPIC_API_KEY,
+ * SUPABASE_URL / NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
  */
 export async function POST(request: Request) {
-  const payload = await request.json().catch(() => null);
+  const raw = await request.text();
+  const secret = process.env.RESEND_WEBHOOK_SECRET?.trim();
+  if (secret && !verifyResendWebhook(raw, request.headers, secret)) {
+    return NextResponse.json({ error: "invalid signature" }, { status: 401 });
+  }
+
+  const payload = (() => {
+    try {
+      return JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  })();
   if (!payload) {
     return NextResponse.json({ error: "invalid json" }, { status: 400 });
   }
 
-  const to =
-    extractAddress(payload?.data?.to) ||
-    extractAddress(payload?.to) ||
-    extractAddress(payload?.envelope?.to);
-  const text =
-    String(payload?.data?.text ?? payload?.text ?? payload?.body ?? "").trim();
-
-  const rfqMatch = /rfq\+([a-zA-Z0-9_-]+)@/i.exec(to ?? "");
-  if (!rfqMatch) {
-    // PO replies not implemented yet — acknowledge so Resend doesn't retry forever.
-    return NextResponse.json({ ok: true, ignored: true, reason: "not_rfq" });
+  const type = String(payload.type ?? "");
+  if (type && type !== "email.received") {
+    return NextResponse.json({ ok: true, ignored: true, reason: "not_inbound" });
   }
 
-  const token = rfqMatch[1];
+  const emailId = extractEmailId(payload);
+  const received = emailId ? await fetchReceivedEmail(emailId) : null;
+
+  const data = (payload.data ?? payload) as Record<string, unknown>;
+  const inbound = firstInboundPlusAddress(
+    collectAddresses(
+      received?.to,
+      data.to,
+      data.received_for,
+      payload.to,
+      payload.received_for,
+    ),
+  );
+  const from =
+    received?.from ||
+    (typeof data.from === "string" ? data.from : "") ||
+    (typeof payload.from === "string" ? payload.from : "");
+  const subject =
+    received?.subject ||
+    (typeof data.subject === "string" ? data.subject : "") ||
+    (typeof payload.subject === "string" ? payload.subject : "");
+  const text = (
+    received?.text ||
+    String(data.text ?? payload.text ?? payload.body ?? "")
+  ).trim();
+  if (!inbound) {
+    return NextResponse.json({
+      ok: true,
+      ignored: true,
+      reason: "unrecognized_recipient",
+    });
+  }
+
+  if (inbound.kind === "po") {
+    const result = await handlePoInboundReply({
+      token: inbound.token,
+      from: bareEmail(from) || from,
+      subject,
+      text,
+      emailId: received?.id ?? emailId,
+    });
+    if (!result.ok && result.error === "unknown_token") {
+      return NextResponse.json({ ok: false, error: "unknown_token" }, { status: 404 });
+    }
+    if (!result.ok) {
+      return NextResponse.json(
+        { ok: false, error: result.error ?? "po_inbound_failed" },
+        { status: 500 },
+      );
+    }
+    return NextResponse.json(result);
+  }
+
   const url = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) {
@@ -44,7 +113,7 @@ export async function POST(request: Request) {
   const { data: inv } = await supabase
     .from("quote_request_suppliers")
     .select("id, quote_request_id")
-    .eq("token", token)
+    .eq("token", inbound.token)
     .maybeSingle();
   if (!inv) {
     return NextResponse.json({ ok: false, error: "unknown_token" }, { status: 404 });
@@ -95,14 +164,4 @@ export async function POST(request: Request) {
     applied: matched.length,
     confidence: parsed.confidence,
   });
-}
-
-function extractAddress(value: unknown): string | null {
-  if (typeof value === "string") return value;
-  if (Array.isArray(value) && typeof value[0] === "string") return value[0];
-  if (Array.isArray(value) && value[0] && typeof value[0] === "object") {
-    const o = value[0] as { email?: string; address?: string };
-    return o.email ?? o.address ?? null;
-  }
-  return null;
 }

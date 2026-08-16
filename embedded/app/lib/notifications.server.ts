@@ -5,7 +5,8 @@ export type NotificationRuleType =
   | "po_not_confirmed"
   | "shipment_delayed"
   | "arriving_soon"
-  | "inventory_low";
+  | "inventory_low"
+  | "inbound_reply_unparsed";
 
 export const RULE_COPY: Record<
   NotificationRuleType,
@@ -31,6 +32,11 @@ export const RULE_COPY: Record<
     description:
       "Email when synced on-hand inventory is at or below the reorder point (per-product threshold when set, otherwise this workspace default).",
     thresholdLabel: "Default on-hand threshold",
+  },
+  inbound_reply_unparsed: {
+    title: "Supplier reply not understood",
+    description:
+      "Email when a supplier replies to a PO and Requisly cannot parse the message.",
   },
 };
 

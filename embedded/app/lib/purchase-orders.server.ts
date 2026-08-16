@@ -750,7 +750,7 @@ export async function sendPurchaseOrder(opts: {
   const { data: po, error } = await supabase
     .from("purchase_orders")
     .select(
-      "id, status, confirmation_stale, po_number, requested_ship_date, confirmed_ship_date, suppliers(name, email), po_line_items(description, qty, unit_cost, sort_order)",
+      "id, status, confirmation_stale, po_number, requested_ship_date, confirmed_ship_date, subtotal, tax_amount, shipping_amount, adjustment_amount, total, suppliers(name, email), po_line_items(description, qty, unit_cost, line_total, sort_order)",
     )
     .eq("id", opts.poId)
     .eq("workspace_id", opts.workspaceId)
@@ -851,11 +851,15 @@ export async function sendPurchaseOrder(opts: {
 
   const base = supplierLinkBaseUrl();
   const url = base ? `${base}/s/${token}` : null;
+  const csvUrl = base
+    ? `${base}/api/supplier-link/csv?token=${encodeURIComponent(token!)}`
+    : null;
 
   const rawLines = (po.po_line_items ?? []) as Array<{
     description: string;
     qty: number;
     unit_cost: number;
+    line_total: number | null;
     sort_order: number | null;
   }>;
   const lines = [...rawLines]
@@ -864,6 +868,8 @@ export async function sendPurchaseOrder(opts: {
       description: line.description,
       qty: Number(line.qty),
       unitCost: Number(line.unit_cost),
+      lineTotal:
+        line.line_total != null ? Number(line.line_total) : undefined,
     }));
 
   const emailResult = await sendPoSupplierEmail({
@@ -873,10 +879,18 @@ export async function sendPurchaseOrder(opts: {
     supplierName: supplier?.name?.trim() || "Supplier",
     shipDateLabel: shipDate ? shortDate(shipDate) : null,
     lines,
+    totals: {
+      subtotal: Number(po.subtotal) || 0,
+      tax: Number(po.tax_amount) || 0,
+      shipping: Number(po.shipping_amount) || 0,
+      adjustments: Number(po.adjustment_amount) || 0,
+      total: Number(po.total) || 0,
+    },
     confirmAsIsUrl: oneClick.confirmAsIsUrl,
     markShippedUrl: oneClick.markShippedUrl,
     supplierLinkUrl: url,
     pdfUrl: pdf.downloadUrl,
+    csvUrl,
     replyTo: inboundReplyToAddress(token!),
   });
 
@@ -1231,33 +1245,88 @@ export async function resolveProposal(opts: {
 
   const { data: proposal, error: pErr } = await supabase
     .from("po_line_item_proposals")
-    .select("id, po_line_item_id")
+    .select("id, po_line_item_id, proposed_qty, proposed_unit_cost, status")
     .eq("id", opts.proposalId)
     .maybeSingle();
   if (pErr) throw new Error(pErr.message);
   if (!proposal) throw new Error("Proposal not found");
+  if (proposal.status !== "pending") throw new Error("Proposal is not pending");
 
   const { data: line, error: lErr } = await supabase
     .from("po_line_items")
-    .select("id, po_id, purchase_orders!inner(workspace_id)")
+    .select(
+      "id, po_id, qty, unit_cost, purchase_orders!inner(id, workspace_id, status, tax_amount, shipping_amount, adjustment_amount)",
+    )
     .eq("id", proposal.po_line_item_id)
     .maybeSingle();
   if (lErr) throw new Error(lErr.message);
   if (!line) throw new Error("Line item not found");
 
-  const po = line.purchase_orders as unknown as { workspace_id: string };
+  const po = line.purchase_orders as unknown as {
+    id: string;
+    workspace_id: string;
+    status: string;
+    tax_amount: number | null;
+    shipping_amount: number | null;
+    adjustment_amount: number | null;
+  };
   if (po.workspace_id !== opts.workspaceId) {
     throw new Error("Proposal not found in this workspace");
   }
+  if (po.status === "rejected") throw new Error("This purchase order was rejected");
 
-  const { data, error } = await supabase.rpc("resolve_line_item_proposal", {
-    p_proposal_id: opts.proposalId,
-    p_accept: opts.accept,
-  });
-  if (error) throw new Error(error.message);
+  if (opts.accept) {
+    const qty =
+      proposal.proposed_qty != null ? Number(proposal.proposed_qty) : Number(line.qty);
+    const unitCost =
+      proposal.proposed_unit_cost != null
+        ? Number(proposal.proposed_unit_cost)
+        : Number(line.unit_cost);
+    const { error: lineErr } = await supabase
+      .from("po_line_items")
+      .update({
+        qty,
+        unit_cost: unitCost,
+        line_total: Number((qty * unitCost).toFixed(2)),
+      })
+      .eq("id", line.id);
+    if (lineErr) throw new Error(lineErr.message);
 
-  const poId = (data as { po_id?: string } | null)?.po_id ?? line.po_id;
-  return { poId };
+    const { data: lines, error: sumErr } = await supabase
+      .from("po_line_items")
+      .select("line_total")
+      .eq("po_id", po.id);
+    if (sumErr) throw new Error(sumErr.message);
+    const subtotal = Number(
+      (lines ?? []).reduce((sum, row) => sum + (Number(row.line_total) || 0), 0).toFixed(2),
+    );
+    const { error: poErr } = await supabase
+      .from("purchase_orders")
+      .update({
+        subtotal,
+        total: rollupTotal(
+          subtotal,
+          Number(po.tax_amount) || 0,
+          Number(po.shipping_amount) || 0,
+          Number(po.adjustment_amount) || 0,
+        ),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", po.id)
+      .eq("workspace_id", opts.workspaceId);
+    if (poErr) throw new Error(poErr.message);
+  }
+
+  const { error: resolveErr } = await supabase
+    .from("po_line_item_proposals")
+    .update({
+      status: opts.accept ? "accepted" : "rejected",
+      resolved_at: new Date().toISOString(),
+    })
+    .eq("id", proposal.id);
+  if (resolveErr) throw new Error(resolveErr.message);
+
+  return { poId: po.id };
 }
 
 export async function listCalendarPurchaseOrders(workspaceId: string) {

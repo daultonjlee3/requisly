@@ -1,6 +1,13 @@
 import { createAdminClient } from "@/lib/supabase/admin";
+import {
+  applyConfirmedEmailParse,
+  type EmailParsePayload,
+} from "@/lib/po-inbound-reply.server";
 
-export type OneClickAction = "confirm_as_is" | "mark_shipped";
+export type OneClickAction =
+  | "confirm_as_is"
+  | "mark_shipped"
+  | "confirm_email_parse";
 
 export type OneClickPreview = {
   token: string;
@@ -30,7 +37,9 @@ export type OneClickRedeemResult =
     };
 
 function actionLabel(action: OneClickAction): string {
-  return action === "confirm_as_is" ? "Confirm as-is" : "Mark shipped";
+  if (action === "confirm_as_is") return "Confirm as-is";
+  if (action === "confirm_email_parse") return "Confirm this interpretation";
+  return "Mark shipped";
 }
 
 function supplierLinkUrlFromToken(linkToken: string | null): string | null {
@@ -48,7 +57,7 @@ async function loadOneClickContext(token: string) {
   const { data: row, error } = await supabase
     .from("supplier_one_click_tokens")
     .select(
-      "id, token, action, ship_date, expires_at, used_at, po_id, workspace_id",
+      "id, token, action, ship_date, expires_at, used_at, po_id, workspace_id, payload",
     )
     .eq("token", token)
     .maybeSingle();
@@ -76,6 +85,7 @@ async function loadOneClickContext(token: string) {
     id: row.id as string,
     token: row.token as string,
     action: row.action as OneClickAction,
+    payload: (row.payload as EmailParsePayload | null) ?? null,
     ship_date: row.ship_date as string | null,
     expires_at: row.expires_at as string,
     used_at: row.used_at as string | null,
@@ -167,6 +177,24 @@ export async function redeemOneClickToken(
   }
 
   try {
+    if (ctx.action === "confirm_email_parse") {
+      if (!ctx.payload) {
+        throw new Error("This confirmation link is missing its interpretation.");
+      }
+      await applyConfirmedEmailParse({
+        linkToken: ctx.link_token,
+        poId: ctx.po_id,
+        payload: ctx.payload,
+      });
+      return {
+        ok: true,
+        actionLabel: actionLabel(ctx.action),
+        poNumber: ctx.po_number,
+        supplierLinkUrl: fullUrl,
+        message: "Your reply was applied.",
+      };
+    }
+
     if (ctx.action === "confirm_as_is") {
       const { error } = await supabase.rpc("supplier_link_confirm", {
         p_token: ctx.link_token,
