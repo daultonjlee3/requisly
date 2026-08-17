@@ -5,6 +5,7 @@ import {
   Autocomplete,
   Banner,
   BlockStack,
+  Box,
   Button,
   Card,
   Divider,
@@ -12,7 +13,6 @@ import {
   Icon,
   IndexTable,
   InlineStack,
-  Layout,
   Text,
   TextField,
 } from "@shopify/polaris";
@@ -200,9 +200,105 @@ export function SupplierProductsPanel({
   }, [linkedSet, shopify, shopifyVariants]);
 
   return (
-    <Layout>
-      <Layout.Section>
+    <BlockStack gap="400">
+      {pending.length > 0 ? (
         <Card>
+          <Form method="post">
+            <input type="hidden" name="intent" value="link_shopify_products" />
+            <input type="hidden" name="supplier_id" value={supplierId} />
+            <input
+              type="hidden"
+              name="effective_date"
+              value={effectiveDate}
+            />
+            <input
+              type="hidden"
+              name="items_json"
+              value={JSON.stringify(
+                pending.map((p) => ({
+                  title: p.title,
+                  sku: p.sku,
+                  shopifyVariantId: p.shopifyVariantId,
+                  productVariantId: p.productVariantId,
+                  unitCost:
+                    p.unitCost.trim() === "" ? null : Number(p.unitCost),
+                })),
+              )}
+            />
+            <BlockStack gap="300">
+              <InlineStack align="space-between" blockAlign="center">
+                <Text as="h2" variant="headingMd">
+                  Ready to link ({pending.length})
+                </Text>
+                <Button variant="plain" onClick={() => setPending([])}>
+                  Clear
+                </Button>
+              </InlineStack>
+
+              <TextField
+                label="Effective date"
+                type="date"
+                value={effectiveDate}
+                onChange={setEffectiveDate}
+                autoComplete="off"
+                helpText="Applied to any lines with a unit cost."
+              />
+
+              <BlockStack gap="300">
+                {pending.map((item, index) => (
+                  <BlockStack key={item.key} gap="200">
+                    {index > 0 ? <Divider /> : null}
+                    <Text as="p" variant="bodyMd" fontWeight="semibold">
+                      {item.title}
+                    </Text>
+                    <Text as="p" variant="bodySm" tone="subdued">
+                      {item.sku || "No SKU"}
+                    </Text>
+                    <InlineStack gap="200" blockAlign="end" wrap>
+                      <TextField
+                        label="Unit cost"
+                        type="number"
+                        min={0}
+                        step={0.01}
+                        value={item.unitCost}
+                        onChange={(value) =>
+                          setPending((prev) =>
+                            prev.map((p) =>
+                              p.key === item.key
+                                ? { ...p, unitCost: value }
+                                : p,
+                            ),
+                          )
+                        }
+                        autoComplete="off"
+                        prefix="$"
+                      />
+                      <Button
+                        variant="plain"
+                        tone="critical"
+                        onClick={() =>
+                          setPending((prev) =>
+                            prev.filter((p) => p.key !== item.key),
+                          )
+                        }
+                      >
+                        Remove
+                      </Button>
+                    </InlineStack>
+                  </BlockStack>
+                ))}
+              </BlockStack>
+
+              <Button submit variant="primary" loading={submitting}>
+                Add to vendor list
+              </Button>
+            </BlockStack>
+          </Form>
+        </Card>
+      ) : null}
+
+      <Card padding="0">
+        <Box padding="400">
           <BlockStack gap="400">
             <InlineStack align="space-between" blockAlign="center" wrap>
               <InlineStack gap="200" blockAlign="start" wrap={false}>
@@ -252,173 +348,59 @@ export function SupplierProductsPanel({
                 <p>{pickerError}</p>
               </Banner>
             ) : null}
-
-            {products.length === 0 ? (
-              <EmptyState
-                heading="No products on this vendor’s list"
-                action={{
-                  content: "Browse Shopify catalog",
-                  onAction: () => void browseShopifyProducts(),
-                }}
-                image={EMPTY_STATE_IMAGE.products}
-              >
-                <p>
-                  Pull variants from your Shopify product list, then set unit
-                  costs for this supplier.
-                </p>
-              </EmptyState>
-            ) : (
-              <IndexTable
-                resourceName={{ singular: "product", plural: "products" }}
-                itemCount={products.length}
-                headings={[
-                  { title: "Product" },
-                  { title: "SKU" },
-                  { title: "Unit cost" },
-                  { title: "Case" },
-                  { title: "MOQ" },
-                ]}
-                selectable={false}
-              >
-                {products.map((p, index) => (
-                  <IndexTable.Row
-                    id={p.id}
-                    key={p.id}
-                    position={index}
-                    onClick={() => navigate(`/app/products/${p.id}`)}
-                  >
-                    <IndexTable.Cell>
-                      <Text as="span" fontWeight="semibold">
-                        {p.title}
-                      </Text>
-                    </IndexTable.Cell>
-                    <IndexTable.Cell>{p.sku}</IndexTable.Cell>
-                    <IndexTable.Cell>{p.unitCost}</IndexTable.Cell>
-                    <IndexTable.Cell>{p.caseQty}</IndexTable.Cell>
-                    <IndexTable.Cell>{p.moq}</IndexTable.Cell>
-                  </IndexTable.Row>
-                ))}
-              </IndexTable>
-            )}
           </BlockStack>
-        </Card>
-      </Layout.Section>
+        </Box>
 
-      <Layout.Section variant="oneThird">
-        <Card>
-          {pending.length === 0 ? (
-            <BlockStack gap="300">
-              <Text as="h2" variant="headingMd">
-                Link from Shopify
-              </Text>
-              <Text as="p" variant="bodySm" tone="subdued">
-                Browse or search the Shopify catalog to queue products, set
-                each unit cost, then add them to this vendor.
-              </Text>
-              <Button onClick={() => void browseShopifyProducts()} variant="primary">
-                Browse Shopify catalog
-              </Button>
-            </BlockStack>
-          ) : (
-            <Form method="post">
-              <input type="hidden" name="intent" value="link_shopify_products" />
-              <input type="hidden" name="supplier_id" value={supplierId} />
-              <input
-                type="hidden"
-                name="effective_date"
-                value={effectiveDate}
-              />
-              <input
-                type="hidden"
-                name="items_json"
-                value={JSON.stringify(
-                  pending.map((p) => ({
-                    title: p.title,
-                    sku: p.sku,
-                    shopifyVariantId: p.shopifyVariantId,
-                    productVariantId: p.productVariantId,
-                    unitCost:
-                      p.unitCost.trim() === ""
-                        ? null
-                        : Number(p.unitCost),
-                  })),
-                )}
-              />
-              <BlockStack gap="300">
-                <InlineStack align="space-between" blockAlign="center">
-                  <Text as="h2" variant="headingMd">
-                    Ready to link ({pending.length})
+        {products.length === 0 ? (
+          <Box padding="400" paddingBlockStart="0">
+            <EmptyState
+              heading="No products on this vendor’s list"
+              action={{
+                content: "Browse Shopify catalog",
+                onAction: () => void browseShopifyProducts(),
+              }}
+              image={EMPTY_STATE_IMAGE.products}
+            >
+              <p>
+                Pull variants from your Shopify product list, then set unit
+                costs for this supplier.
+              </p>
+            </EmptyState>
+          </Box>
+        ) : (
+          <IndexTable
+            resourceName={{ singular: "product", plural: "products" }}
+            itemCount={products.length}
+            headings={[
+              { title: "Product" },
+              { title: "SKU" },
+              { title: "Unit cost" },
+              { title: "Case" },
+              { title: "MOQ" },
+            ]}
+            selectable={false}
+          >
+            {products.map((p, index) => (
+              <IndexTable.Row
+                id={p.id}
+                key={p.id}
+                position={index}
+                onClick={() => navigate(`/app/products/${p.id}`)}
+              >
+                <IndexTable.Cell>
+                  <Text as="span" fontWeight="semibold">
+                    {p.title}
                   </Text>
-                  <Button
-                    variant="plain"
-                    onClick={() => setPending([])}
-                  >
-                    Clear
-                  </Button>
-                </InlineStack>
-
-                <TextField
-                  label="Effective date"
-                  type="date"
-                  value={effectiveDate}
-                  onChange={setEffectiveDate}
-                  autoComplete="off"
-                  helpText="Applied to any lines with a unit cost."
-                />
-
-                <BlockStack gap="300">
-                  {pending.map((item, index) => (
-                    <BlockStack key={item.key} gap="200">
-                      {index > 0 ? <Divider /> : null}
-                      <Text as="p" variant="bodyMd" fontWeight="semibold">
-                        {item.title}
-                      </Text>
-                      <Text as="p" variant="bodySm" tone="subdued">
-                        {item.sku || "No SKU"}
-                      </Text>
-                      <InlineStack gap="200" blockAlign="end" wrap>
-                        <TextField
-                          label="Unit cost"
-                          type="number"
-                          min={0}
-                          step={0.01}
-                          value={item.unitCost}
-                          onChange={(value) =>
-                            setPending((prev) =>
-                              prev.map((p) =>
-                                p.key === item.key
-                                  ? { ...p, unitCost: value }
-                                  : p,
-                              ),
-                            )
-                          }
-                          autoComplete="off"
-                          prefix="$"
-                        />
-                        <Button
-                          variant="plain"
-                          tone="critical"
-                          onClick={() =>
-                            setPending((prev) =>
-                              prev.filter((p) => p.key !== item.key),
-                            )
-                          }
-                        >
-                          Remove
-                        </Button>
-                      </InlineStack>
-                    </BlockStack>
-                  ))}
-                </BlockStack>
-
-                <Button submit variant="primary" loading={submitting}>
-                  Add to vendor list
-                </Button>
-              </BlockStack>
-            </Form>
-          )}
-        </Card>
-      </Layout.Section>
-    </Layout>
+                </IndexTable.Cell>
+                <IndexTable.Cell>{p.sku}</IndexTable.Cell>
+                <IndexTable.Cell>{p.unitCost}</IndexTable.Cell>
+                <IndexTable.Cell>{p.caseQty}</IndexTable.Cell>
+                <IndexTable.Cell>{p.moq}</IndexTable.Cell>
+              </IndexTable.Row>
+            ))}
+          </IndexTable>
+        )}
+      </Card>
+    </BlockStack>
   );
 }
