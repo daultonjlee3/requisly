@@ -20,12 +20,27 @@ export type TeamInviteRow = {
   status: "pending" | "accepted" | "revoked";
 };
 
+function isLocalhostUrl(url: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/|$)/i.test(url);
+}
+
+/** Public invite links always use the production site in production. */
 function appBaseUrl(): string {
-  return (
+  const raw = (
     process.env.NEXT_PUBLIC_APP_URL ||
     process.env.SUPPLIER_LINK_BASE_URL ||
-    "http://localhost:3001"
-  ).replace(/\/$/, "");
+    ""
+  )
+    .trim()
+    .replace(/\/$/, "");
+  if (process.env.NODE_ENV === "production") {
+    if (!raw || isLocalhostUrl(raw)) return "https://requisly.com";
+    return raw;
+  }
+  if (raw) return raw;
+  throw new Error(
+    "NEXT_PUBLIC_APP_URL or SUPPLIER_LINK_BASE_URL is required to generate invite links",
+  );
 }
 
 function normalizeEmail(raw: string): string {

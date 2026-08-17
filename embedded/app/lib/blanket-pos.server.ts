@@ -1,6 +1,12 @@
 import { createServiceClient } from "./supabase.server";
 import { money, shortDate } from "./format";
 import {
+  resolveListWindow,
+  sanitizeSearch,
+  type ListPageOpts,
+  type ListPageResult,
+} from "./list-table";
+import {
   canDrawDown,
   committedLabel,
   effectiveStatus,
@@ -170,6 +176,37 @@ export async function listBlanketPurchaseOrders(
   if (error) throw new Error(error.message);
   const today = utcToday();
   return (data ?? []).map((row) => mapListItem(row as BlanketRow, today));
+}
+
+export async function listBlanketsPage(
+  workspaceId: string,
+  opts?: ListPageOpts & { supplierId?: string | null },
+): Promise<ListPageResult<BlanketListItem>> {
+  const supabase = createServiceClient();
+  const q = sanitizeSearch(opts?.q);
+  const window = resolveListWindow(opts);
+  let query = supabase
+    .from("blanket_purchase_orders")
+    .select(
+      "id, workspace_id, supplier_id, blanket_number, title, start_date, end_date, committed_qty, committed_value, remaining_qty, remaining_value, status, notes, suppliers(name)",
+      { count: "exact" },
+    )
+    .eq("workspace_id", workspaceId)
+    .order("created_at", { ascending: false })
+    .range(window.from, window.to);
+  if (opts?.supplierId) query = query.eq("supplier_id", opts.supplierId);
+  if (q) {
+    query = query.or(
+      `blanket_number.ilike.%${q}%,title.ilike.%${q}%`,
+    );
+  }
+  const { data, error, count } = await query;
+  if (error) throw new Error(error.message);
+  const today = utcToday();
+  return {
+    rows: (data ?? []).map((row) => mapListItem(row as BlanketRow, today)),
+    total: count ?? 0,
+  };
 }
 
 export async function listBlanketPickerOptions(

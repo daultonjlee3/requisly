@@ -3,7 +3,9 @@ import {
   Form,
   useActionData,
   useLoaderData,
+  useNavigate,
   useNavigation,
+  useSearchParams,
 } from "@remix-run/react";
 import {
   Badge,
@@ -30,8 +32,8 @@ import {
   PersonIcon,
   ProductIcon,
 } from "@shopify/polaris-icons";
-import { TitleBar } from "@shopify/app-bridge-react";
-import { useState } from "react";
+import { TitleBar, useAppBridge } from "@shopify/app-bridge-react";
+import { useEffect, useState } from "react";
 import { PendingProposalsPanel } from "../components/PendingProposalsPanel";
 import { PoDocumentsCard } from "../components/PoDocumentsCard";
 import { PoShipmentsCard } from "../components/PoShipmentsCard";
@@ -63,7 +65,12 @@ import {
   updatePoArrivalDate,
   updatePoCommercialFields,
 } from "../lib/purchase-orders.server";
-import { closePurchaseOrder } from "../lib/receiving.server";
+import { ReceiveForm } from "../components/ReceiveForm";
+import {
+  closePurchaseOrder,
+  completeReceiving,
+  loadReceiveForm,
+} from "../lib/receiving.server";
 import { listSupplierContacts } from "../lib/suppliers.server";
 import {
   addMerchantShipment,
@@ -88,8 +95,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     merchant.workspace.id,
     po.supplier.id,
   );
+  const receiveForm = po.canReceive
+    ? await loadReceiveForm(merchant.workspace.id, poId)
+    : null;
   return {
     po,
+    receiveForm,
     documents,
     shipments,
     contacts,
@@ -236,6 +247,17 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       });
       return merchant.redirect(`/app/purchase-orders/${poId}`);
     }
+    if (intent === "receive") {
+      const lines = JSON.parse(String(formData.get("lines_json") ?? "[]"));
+      await completeReceiving({
+        workspaceId: merchant.workspace.id,
+        poId,
+        note: String(formData.get("note") ?? "").trim() || null,
+        lines,
+        admin: merchant.admin,
+      });
+      return merchant.redirect(`/app/purchase-orders/${poId}?received=1`);
+    }
     if (intent === "commercial") {
       await updatePoCommercialFields({
         workspaceId: merchant.workspace.id,
@@ -297,10 +319,33 @@ function stepStatusLabel(state: "done" | "current" | "future" | "skip") {
 }
 
 export default function PurchaseOrderDetail() {
-  const { po, documents, shipments, contacts, existingTemplates, justEdited } =
-    useLoaderData<typeof loader>();
+  const {
+    po,
+    receiveForm,
+    documents,
+    shipments,
+    contacts,
+    existingTemplates,
+    justEdited,
+  } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
+  const navigate = useNavigate();
   const navigation = useNavigation();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const shopify = useAppBridge();
+  const justReceived = searchParams.get("received") === "1";
+
+  useEffect(() => {
+    if (!justReceived) return;
+    try {
+      shopify.toast.show("Receipt recorded.");
+    } catch {
+      /* toast unavailable outside Admin */
+    }
+    const next = new URLSearchParams(searchParams);
+    next.delete("received");
+    setSearchParams(next, { replace: true });
+  }, [justReceived, shopify, searchParams, setSearchParams]);
   const defaultSendEmail =
     contacts.find((c) => c.isPrimary)?.email || po.supplier.email || "";
   const [sendChoice, setSendChoice] = useState(defaultSendEmail || "__custom");
@@ -357,32 +402,31 @@ export default function PurchaseOrderDetail() {
       title={po.poNumber}
       subtitle={`${po.supplier.name} · created ${po.createdAt}`}
       titleMetadata={<Badge tone={po.statusTone}>{po.statusLabel}</Badge>}
-      backAction={{ content: "Purchase orders", url: "/app/purchase-orders" }}
-      primaryAction={
-        po.canReceive
-          ? {
-              content: "Receive",
-              url: `/app/purchase-orders/${po.id}/receive`,
-            }
-          : undefined
-      }
+      backAction={{
+        content: "Purchase orders",
+        onAction: () => navigate("/app/purchase-orders"),
+      }}
       secondaryActions={[
         ...(po.canEdit
           ? [
               {
                 content: po.status === "draft" ? "Edit draft" : "Edit PO",
-                url: `/app/purchase-orders/${po.id}/edit`,
+                onAction: () =>
+                  navigate(`/app/purchase-orders/${po.id}/edit`),
               },
             ]
           : []),
         {
           content: "Save as template",
-          url: `/app/templates/new?from=${po.id}`,
+          onAction: () => navigate(`/app/templates/new?from=${po.id}`),
         },
       ]}
     >
       <TitleBar title={po.poNumber} />
       <BlockStack gap="500">
+        {receiveForm ? (
+          <ReceiveForm lines={receiveForm.lines} error={actionData?.error} />
+        ) : null}
         {actionData?.error ? (
           <Banner tone="critical" title="Action failed">
             <p>{actionData.error}</p>

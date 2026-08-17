@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     "How Requisly processes merchant and order data for Shopify procurement and inventory reporting.",
 };
 
-const updated = "August 14, 2026";
+const updated = "August 16, 2026";
 
 export default function PrivacyPolicyPage() {
   return (
@@ -95,8 +95,10 @@ export default function PrivacyPolicyPage() {
             When a merchant grants optional <code>read_orders</code>, we sync a
             read-only Orders cache for Report Builder and inventory / sell-through
             planning. We request <strong>Level 1</strong> protected customer data
-            only — Order resources and line economics — not identifying customer
-            fields.
+            for Order resources, line economics, and the order email Shopify
+            requires us to match on <code>customers/data_request</code> and{" "}
+            <code>customers/redact</code>. We do not request the Customers
+            resource (<code>read_customers</code>).
           </p>
           <p>We store:</p>
           <ul>
@@ -107,14 +109,19 @@ export default function PrivacyPolicyPage() {
               Line items: title, SKU, quantity, unit price, and variant id
             </li>
             <li>
+              Customer Shopify id and email — used only to match{" "}
+              <code>customers/data_request</code> and{" "}
+              <code>customers/redact</code>
+            </li>
+            <li>
               Order tags / note when needed to exclude synthetic test orders
             </li>
           </ul>
           <p>
-            We do <strong>not</strong> request or intentionally store customer
-            name, email, phone, or address for this feature. Supplier and staff
-            emails the merchant enters are B2B contact data for procurement, not
-            storefront customer PII collected from Shopify Customers APIs.
+            We do <strong>not</strong> request or store customer name, phone, or
+            address. Supplier and staff emails the merchant enters are B2B
+            contact data for procurement, not storefront customer PII collected
+            from Shopify Customers APIs.
           </p>
         </Section>
 

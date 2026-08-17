@@ -13,7 +13,7 @@ import {
 import { TitleBar } from "@shopify/app-bridge-react";
 import { useCallback, useState } from "react";
 import { getMerchantContext } from "../lib/merchant.server";
-import { listBlanketsPage } from "../lib/blanket-pos.server";
+import { listWorkspaceContracts } from "../lib/supplier-contracts.server";
 import {
   indexTablePagination,
   parseListPage,
@@ -28,12 +28,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const q = parseListQuery(url.searchParams.get("q"));
   const page = parseListPage(url.searchParams.get("page"));
   const forExport = url.searchParams.get("export") === "1";
-  const result = await listBlanketsPage(merchant.workspace.id, {
+  const result = await listWorkspaceContracts(merchant.workspace.id, {
     q,
     ...(forExport ? { forExport: true } : { page }),
   });
   return {
-    blankets: result.rows,
+    contracts: result.rows,
     total: result.total,
     q,
     page,
@@ -42,8 +42,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   };
 };
 
-export default function BlanketPurchaseOrdersIndex() {
-  const { blankets, total, q, page } = useLoaderData<typeof loader>();
+export default function ContractsIndex() {
+  const { contracts, total, q, page } = useLoaderData<typeof loader>();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [queryValue, setQueryValue] = useState(q);
@@ -54,33 +54,23 @@ export default function BlanketPurchaseOrdersIndex() {
     [searchParams, setSearchParams],
   );
   const { exportCsv, exporting } = useFilteredCsvExport({
-    path: "/app/blankets",
+    path: "/app/contracts",
     searchParams,
-    prefix: "blankets",
-    headers: [
-      "blanket",
-      "title",
-      "supplier",
-      "period",
-      "remaining",
-      "committed",
-      "status",
-    ],
-    mapRow: (row: (typeof blankets)[number]) => [
-      row.blanketNumber,
+    prefix: "contracts",
+    headers: ["title", "supplier", "start", "renewal", "status"],
+    mapRow: (row: (typeof contracts)[number]) => [
       row.title,
       row.supplierName,
-      row.periodLabel,
-      row.remainingLabel,
-      row.committedLabel,
-      row.statusLabel,
+      row.startLabel,
+      row.renewalLabel,
+      row.renewalStatusLabel,
     ],
   });
 
   return (
     <Page
-      title="Blanket POs"
-      subtitle="Committed quantity or value with a supplier. Real POs draw it down."
+      title="Contracts"
+      subtitle="Vendor contracts and renewal dates"
       secondaryActions={[
         {
           content: "Export",
@@ -89,13 +79,13 @@ export default function BlanketPurchaseOrdersIndex() {
         },
       ]}
     >
-      <TitleBar title="Blanket POs" />
+      <TitleBar title="Contracts" />
       <BlockStack gap="400">
         {total > 0 || q ? (
           <Card padding="0">
             <Filters
               queryValue={queryValue}
-              queryPlaceholder="Search by blanket number or title"
+              queryPlaceholder="Search by title or notes"
               filters={[]}
               onQueryChange={setQueryValue}
               onQueryClear={() => {
@@ -114,32 +104,28 @@ export default function BlanketPurchaseOrdersIndex() {
         <Card padding="0">
           {total === 0 && !q ? (
             <EmptyState
-              heading="No blanket POs yet"
+              heading="No contracts yet"
               image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
               action={{ content: "Suppliers", url: "/app/suppliers" }}
             >
-              <p>
-                Open a supplier and create a blanket there. Then attach it when
-                you draft a purchase order.
-              </p>
+              <p>Open a supplier to add a contract and renewal date.</p>
             </EmptyState>
-          ) : blankets.length === 0 ? (
+          ) : contracts.length === 0 ? (
             <EmptyState
-              heading="No blankets match"
+              heading="No contracts match"
               image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
             >
-              <p>Try a different blanket number or title.</p>
+              <p>Try a different title or note.</p>
             </EmptyState>
           ) : (
             <IndexTable
-              resourceName={{ singular: "blanket", plural: "blankets" }}
-              itemCount={blankets.length}
+              resourceName={{ singular: "contract", plural: "contracts" }}
+              itemCount={contracts.length}
               headings={[
-                { title: "Blanket" },
+                { title: "Contract" },
                 { title: "Supplier" },
-                { title: "Period" },
-                { title: "Remaining" },
-                { title: "Committed" },
+                { title: "Start" },
+                { title: "Renewal" },
                 { title: "Status" },
               ]}
               selectable={false}
@@ -149,27 +135,23 @@ export default function BlanketPurchaseOrdersIndex() {
                 onPageChange: (next) => applyParams({ page: String(next) }),
               })}
             >
-              {blankets.map((blanket, index) => (
+              {contracts.map((row, index) => (
                 <IndexTable.Row
-                  id={blanket.id}
-                  key={blanket.id}
+                  id={row.id}
+                  key={row.id}
                   position={index}
-                  onClick={() => navigate(`/app/blankets/${blanket.id}`)}
+                  onClick={() => navigate(`/app/suppliers/${row.supplierId}`)}
                 >
                   <IndexTable.Cell>
                     <Text as="span" fontWeight="semibold">
-                      {blanket.blanketNumber}
-                    </Text>
-                    <Text as="p" variant="bodySm" tone="subdued">
-                      {blanket.title}
+                      {row.title}
                     </Text>
                   </IndexTable.Cell>
-                  <IndexTable.Cell>{blanket.supplierName}</IndexTable.Cell>
-                  <IndexTable.Cell>{blanket.periodLabel}</IndexTable.Cell>
-                  <IndexTable.Cell>{blanket.remainingLabel}</IndexTable.Cell>
-                  <IndexTable.Cell>{blanket.committedLabel}</IndexTable.Cell>
+                  <IndexTable.Cell>{row.supplierName}</IndexTable.Cell>
+                  <IndexTable.Cell>{row.startLabel}</IndexTable.Cell>
+                  <IndexTable.Cell>{row.renewalLabel}</IndexTable.Cell>
                   <IndexTable.Cell>
-                    <Badge tone={blanket.statusTone}>{blanket.statusLabel}</Badge>
+                    <Badge tone={row.renewalTone}>{row.renewalStatusLabel}</Badge>
                   </IndexTable.Cell>
                 </IndexTable.Row>
               ))}

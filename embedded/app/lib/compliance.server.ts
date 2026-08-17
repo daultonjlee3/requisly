@@ -17,12 +17,26 @@ type CustomerPayload = {
 
 /**
  * Requisly stores a read-only Shopify Orders cache for Report Builder /
- * reorder velocity when read_orders (+ Protected Customer Data for Order
- * resources) is granted. We do **not** persist storefront customer PII
- * (email/name/phone/address) — only order/line economics. GDPR handlers
- * match via orders_requested / orders_to_redact IDs from Shopify payloads.
+ * reorder velocity when read_orders is granted. Customer Shopify id and
+ * email are stored only so GDPR customers/data_request and customers/redact
+ * can match. Name, phone, and address are not persisted. Handlers also
+ * delete by orders_to_redact / look up by orders_requested IDs.
  * Supplier/contact emails are B2B merchant data, not storefront customers.
  */
+
+function normalizeShopifyOrderIds(values: unknown): string[] {
+  if (!Array.isArray(values)) return [];
+  const ids = new Set<string>();
+  for (const value of values) {
+    if (value == null || value === "") continue;
+    const raw = String(value).trim();
+    if (!raw) continue;
+    const numeric = raw.includes("/") ? raw.split("/").pop() ?? raw : raw;
+    ids.add(numeric);
+    ids.add(raw);
+  }
+  return [...ids];
+}
 
 async function logComplianceEvent(opts: {
   shopDomain: string;
@@ -76,7 +90,7 @@ export async function handleCustomersDataRequest(
     phone,
     orders_requested: payload.orders_requested ?? [],
     note:
-      "Requisly stores a read-only Orders cache for Report Builder when read_orders is granted. Supplier/contact emails are B2B merchant data, not storefront customers.",
+      "Requisly stores a read-only Orders cache (including customer id/email for GDPR matching) when read_orders is granted. Supplier/contact emails are B2B merchant data, not storefront customers.",
     notification_log: [] as unknown[],
     shopify_orders: [] as unknown[],
     shopify_order_line_items: [] as unknown[],
@@ -91,22 +105,21 @@ export async function handleCustomersDataRequest(
     matches.notification_log = logs ?? [];
   }
 
-  if (workspaceId && (email || customerId)) {
+  const requestedOrderIds = normalizeShopifyOrderIds(payload.orders_requested);
+  if (workspaceId && (email || customerId || requestedOrderIds.length)) {
     let ordersQ = supabase
       .from("shopify_orders")
       .select(
         "id, shopify_order_id, order_name, processed_at, total_price, customer_email, customer_shopify_id",
       )
       .eq("workspace_id", workspaceId);
-    if (email && customerId) {
-      ordersQ = ordersQ.or(
-        `customer_email.eq.${email},customer_shopify_id.eq.${customerId}`,
-      );
-    } else if (email) {
-      ordersQ = ordersQ.eq("customer_email", email);
-    } else if (customerId) {
-      ordersQ = ordersQ.eq("customer_shopify_id", customerId);
+    const orParts: string[] = [];
+    if (email) orParts.push(`customer_email.eq.${email}`);
+    if (customerId) orParts.push(`customer_shopify_id.eq.${customerId}`);
+    if (requestedOrderIds.length) {
+      orParts.push(`shopify_order_id.in.(${requestedOrderIds.join(",")})`);
     }
+    if (orParts.length) ordersQ = ordersQ.or(orParts.join(","));
     const { data: orders } = await ordersQ.limit(200);
     matches.shopify_orders = orders ?? [];
     const orderIds = (orders ?? []).map((o) => o.id);
@@ -170,24 +183,42 @@ export async function handleCustomersRedact(
     deletedNotifications = data?.length ?? 0;
   }
 
-  if (workspaceId && (email || customerId)) {
-    let q = supabase
-      .from("shopify_orders")
-      .delete()
-      .eq("workspace_id", workspaceId)
-      .select("id");
-    if (email && customerId) {
-      q = q.or(
-        `customer_email.eq.${email},customer_shopify_id.eq.${customerId}`,
-      );
-    } else if (email) {
-      q = q.eq("customer_email", email);
-    } else if (customerId) {
-      q = q.eq("customer_shopify_id", customerId);
+  const orderIdsToRedact = normalizeShopifyOrderIds(payload.orders_to_redact);
+  if (workspaceId && (email || customerId || orderIdsToRedact.length)) {
+    const deletedIds = new Set<string>();
+
+    if (email || customerId) {
+      let q = supabase
+        .from("shopify_orders")
+        .delete()
+        .eq("workspace_id", workspaceId)
+        .select("id");
+      if (email && customerId) {
+        q = q.or(
+          `customer_email.eq.${email},customer_shopify_id.eq.${customerId}`,
+        );
+      } else if (email) {
+        q = q.eq("customer_email", email);
+      } else if (customerId) {
+        q = q.eq("customer_shopify_id", customerId);
+      }
+      const { data, error } = await q;
+      if (error) throw new Error(error.message);
+      for (const row of data ?? []) deletedIds.add(row.id);
     }
-    const { data, error } = await q;
-    if (error) throw new Error(error.message);
-    deletedOrders = data?.length ?? 0;
+
+    if (orderIdsToRedact.length) {
+      const { data, error } = await supabase
+        .from("shopify_orders")
+        .delete()
+        .eq("workspace_id", workspaceId)
+        .in("shopify_order_id", orderIdsToRedact)
+        .select("id");
+      if (error) throw new Error(error.message);
+      for (const row of data ?? []) deletedIds.add(row.id);
+    }
+
+    deletedOrders = deletedIds.size;
     // Line items cascade via FK on order delete.
   }
 
@@ -198,7 +229,7 @@ export async function handleCustomersRedact(
     shopify_customer_id: payload.customer?.id ?? null,
     orders_to_redact: payload.orders_to_redact ?? [],
     note:
-      "Orders cache rows for this customer were removed when present. Supplier records are retained (not storefront customers).",
+      "Orders cache rows matching this customer or orders_to_redact were removed. Supplier records are retained (not storefront customers).",
   };
 
   await logComplianceEvent({

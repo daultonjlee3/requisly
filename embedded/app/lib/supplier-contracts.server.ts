@@ -6,6 +6,12 @@ import {
   isDateOnly,
 } from "./contract-renewal";
 import { utcToday } from "./recurring-po";
+import {
+  resolveListWindow,
+  sanitizeSearch,
+  type ListPageOpts,
+  type ListPageResult,
+} from "./list-table";
 
 const BUCKET = "supplier-contracts";
 const MAX_BYTES = 50 * 1024 * 1024;
@@ -24,6 +30,11 @@ export type SupplierContractRow = {
   fileType: string | null;
   downloadUrl: string | null;
   createdLabel: string;
+};
+
+export type WorkspaceContractRow = SupplierContractRow & {
+  supplierId: string;
+  supplierName: string;
 };
 
 function emptyToNull(value: unknown) {
@@ -105,6 +116,42 @@ export async function listSupplierContracts(
     rows.push(mapRow(row, await signedUrl(row.file_path), today));
   }
   return rows;
+}
+
+export async function listWorkspaceContracts(
+  workspaceId: string,
+  opts?: ListPageOpts,
+): Promise<ListPageResult<WorkspaceContractRow>> {
+  const supabase = createServiceClient();
+  const q = sanitizeSearch(opts?.q);
+  const window = resolveListWindow(opts);
+  let query = supabase
+    .from("supplier_contracts")
+    .select(
+      "id, supplier_id, title, start_date, renewal_date, notes, file_path, file_name, file_type, created_at, suppliers(name)",
+      { count: "exact" },
+    )
+    .eq("workspace_id", workspaceId)
+    .order("renewal_date", { ascending: true, nullsFirst: false })
+    .order("created_at", { ascending: false })
+    .range(window.from, window.to);
+  if (q) {
+    query = query.or(`title.ilike.%${q}%,notes.ilike.%${q}%`);
+  }
+  const { data, error, count } = await query;
+  if (error) throw new Error(error.message);
+
+  const today = utcToday();
+  const rows: WorkspaceContractRow[] = [];
+  for (const row of data ?? []) {
+    const supplier = row.suppliers as unknown as { name: string } | null;
+    rows.push({
+      ...mapRow(row, await signedUrl(row.file_path), today),
+      supplierId: row.supplier_id,
+      supplierName: supplier?.name ?? "—",
+    });
+  }
+  return { rows, total: count ?? 0 };
 }
 
 async function uploadContractFile(opts: {

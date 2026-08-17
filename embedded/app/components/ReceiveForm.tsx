@@ -5,9 +5,9 @@ import {
   BlockStack,
   Button,
   Card,
+  Collapsible,
   FormLayout,
   InlineStack,
-  Layout,
   ProgressBar,
   Select,
   Text,
@@ -37,8 +37,11 @@ export function ReceiveForm({
   error?: string | null;
 }) {
   const navigation = useNavigation();
-  const submitting = navigation.state !== "idle";
+  const submitting =
+    navigation.state !== "idle" &&
+    navigation.formData?.get("intent") === "receive";
   const [note, setNote] = useState("");
+  const [adjusting, setAdjusting] = useState(false);
   const [drafts, setDrafts] = useState<DraftLine[]>(
     lines.map((line) => ({
       po_line_item_id: line.id,
@@ -50,19 +53,22 @@ export function ReceiveForm({
 
   const progress = useMemo(() => {
     let ordered = 0;
-    let received = 0;
+    let already = 0;
+    let incoming = 0;
     for (const line of lines) {
       ordered += line.qty;
+      already += line.alreadyReceived;
       const draft = drafts.find((d) => d.po_line_item_id === line.id);
-      received +=
-        line.alreadyReceived + (Number(draft?.qty_received) || 0);
+      incoming += Number(draft?.qty_received) || 0;
     }
+    const received = already + incoming;
     return {
       ordered,
+      already,
+      incoming,
       received,
-      pct: ordered
-        ? Math.min(100, Math.round((received / ordered) * 100))
-        : 0,
+      pct: ordered ? Math.min(100, Math.round((received / ordered) * 100)) : 0,
+      closes: received >= ordered && incoming > 0,
     };
   }, [lines, drafts]);
 
@@ -72,6 +78,15 @@ export function ReceiveForm({
     );
   }
 
+  const submitLines = adjusting
+    ? drafts
+    : lines.map((line) => ({
+        po_line_item_id: line.id,
+        qty_received: String(line.remaining),
+        condition: "good" as ReceiptCondition,
+        reason_note: "",
+      }));
+
   return (
     <Form method="post">
       <input type="hidden" name="intent" value="receive" />
@@ -80,7 +95,7 @@ export function ReceiveForm({
         type="hidden"
         name="lines_json"
         value={JSON.stringify(
-          drafts.map((d) => ({
+          submitLines.map((d) => ({
             po_line_item_id: d.po_line_item_id,
             qty_received: Number(d.qty_received) || 0,
             condition: d.condition,
@@ -89,138 +104,142 @@ export function ReceiveForm({
         )}
       />
 
-      <BlockStack gap="400">
-        {error ? (
-          <Banner tone="critical" title="Could not complete receipt">
-            <p>{error}</p>
-          </Banner>
-        ) : null}
+      <Card>
+        <BlockStack gap="400">
+          {error ? (
+            <Banner tone="critical" title="Could not complete receipt">
+              <p>{error}</p>
+            </Banner>
+          ) : null}
 
-        <Layout>
-          <Layout.Section>
-            <Card>
-              <BlockStack gap="400">
-                <InlineStack align="space-between" blockAlign="center">
-                  <Text as="h2" variant="headingMd">
-                    What arrived
-                  </Text>
-                  <Text as="span" tone="subdued">
-                    Non-good conditions require a reason note
-                  </Text>
-                </InlineStack>
+          <BlockStack gap="200">
+            <InlineStack align="space-between" blockAlign="center">
+              <Text as="h2" variant="headingMd">
+                Receive shipment
+              </Text>
+              <Text as="span" tone="subdued">
+                {progress.received} of {progress.ordered} units
+              </Text>
+            </InlineStack>
+            <ProgressBar progress={progress.pct} size="small" />
+            <Text as="p" tone="subdued">
+              {progress.closes
+                ? "Receiving the rest will mark this PO received and close it."
+                : progress.incoming > 0
+                  ? "This receipt will leave the PO partially received."
+                  : "Enter a quantity to receive."}
+            </Text>
+          </BlockStack>
 
-                <BlockStack gap="400">
-                  {lines.map((line) => {
-                    const draft = drafts.find(
-                      (d) => d.po_line_item_id === line.id,
-                    )!;
-                    const remaining = Math.max(
-                      line.qty -
-                        line.alreadyReceived -
-                        (Number(draft.qty_received) || 0),
-                      0,
-                    );
-                    return (
-                      <Card key={line.id}>
-                        <BlockStack gap="300">
-                          <Text as="h3" variant="headingSm">
-                            {line.description}
-                          </Text>
-                          <FormLayout>
-                            <FormLayout.Group>
-                              <TextField
-                                label="Ordered"
-                                value={String(line.qty)}
-                                autoComplete="off"
-                                disabled
-                              />
-                              <TextField
-                                label="Already received"
-                                value={String(line.alreadyReceived)}
-                                autoComplete="off"
-                                disabled
-                              />
-                              <TextField
-                                label="This receipt"
-                                type="number"
-                                min={0}
-                                autoComplete="off"
-                                value={draft.qty_received}
-                                onChange={(value) =>
-                                  update(line.id, { qty_received: value })
-                                }
-                              />
-                            </FormLayout.Group>
-                            <Select
-                              label="Condition"
-                              options={CONDITION_OPTIONS}
-                              value={draft.condition}
-                              onChange={(value) =>
-                                update(line.id, {
-                                  condition: value as ReceiptCondition,
-                                })
-                              }
-                            />
-                            {draft.condition !== "good" ? (
-                              <TextField
-                                label="Reason note"
-                                autoComplete="off"
-                                value={draft.reason_note}
-                                onChange={(value) =>
-                                  update(line.id, { reason_note: value })
-                                }
-                                requiredIndicator
-                              />
-                            ) : null}
-                          </FormLayout>
-                          <Text as="p" tone="subdued">
-                            Remaining after this receipt: {remaining}
-                          </Text>
-                        </BlockStack>
-                      </Card>
-                    );
-                  })}
-                </BlockStack>
+          <InlineStack gap="200" wrap>
+            {adjusting ? null : (
+              <Button
+                submit
+                variant="primary"
+                loading={submitting}
+                disabled={
+                  lines.reduce((sum, line) => sum + line.remaining, 0) <= 0
+                }
+              >
+                {progress.already > 0
+                  ? `Receive remaining ${lines.reduce((sum, line) => sum + line.remaining, 0)} as good`
+                  : `Receive all ${lines.reduce((sum, line) => sum + line.remaining, 0)} as good`}
+              </Button>
+            )}
+            <Button
+              onClick={() => setAdjusting((open) => !open)}
+              disclosure={adjusting ? "up" : "down"}
+            >
+              {adjusting ? "Hide adjustments" : "Adjust quantities"}
+            </Button>
+          </InlineStack>
 
-                <TextField
-                  label="Note on this receipt"
-                  autoComplete="off"
-                  multiline={2}
-                  value={note}
-                  onChange={setNote}
-                />
-                <Button submit variant="primary" loading={submitting}>
-                  Complete this receipt
-                </Button>
-              </BlockStack>
-            </Card>
-          </Layout.Section>
-
-          <Layout.Section variant="oneThird">
-            <Card>
-              <BlockStack gap="300">
-                <Text as="h2" variant="headingMd">
-                  Receiving progress
-                </Text>
-                <InlineStack align="space-between">
-                  <Text as="span" tone="subdued">
-                    {progress.received} of {progress.ordered} units
-                  </Text>
-                  <Text as="span" fontWeight="semibold">
-                    {progress.pct}%
-                  </Text>
-                </InlineStack>
-                <ProgressBar progress={progress.pct} size="small" />
-                <Text as="p" tone="subdued">
-                  {progress.received >= progress.ordered
-                    ? "This will mark the PO Received and auto-close it."
-                    : "This will mark the PO Partially Received until remaining units arrive (or you Close PO)."}
-                </Text>
-              </BlockStack>
-            </Card>
-          </Layout.Section>
-        </Layout>
-      </BlockStack>
+          <Collapsible
+            open={adjusting}
+            id="receive-adjustments"
+            transition={{ duration: "200ms", timingFunction: "ease-in-out" }}
+          >
+            <BlockStack gap="400">
+              {lines.map((line) => {
+                const draft = drafts.find(
+                  (d) => d.po_line_item_id === line.id,
+                )!;
+                return (
+                  <BlockStack key={line.id} gap="200">
+                    <Text as="h3" variant="headingSm">
+                      {line.description}
+                    </Text>
+                    <FormLayout>
+                      <FormLayout.Group>
+                        <TextField
+                          label="Ordered"
+                          value={String(line.qty)}
+                          autoComplete="off"
+                          disabled
+                        />
+                        {line.alreadyReceived > 0 ? (
+                          <TextField
+                            label="Already received"
+                            value={String(line.alreadyReceived)}
+                            autoComplete="off"
+                            disabled
+                          />
+                        ) : null}
+                        <TextField
+                          label="This receipt"
+                          type="number"
+                          min={0}
+                          autoComplete="off"
+                          value={draft.qty_received}
+                          onChange={(value) =>
+                            update(line.id, { qty_received: value })
+                          }
+                        />
+                      </FormLayout.Group>
+                      <Select
+                        label="Condition"
+                        options={CONDITION_OPTIONS}
+                        value={draft.condition}
+                        onChange={(value) =>
+                          update(line.id, {
+                            condition: value as ReceiptCondition,
+                          })
+                        }
+                      />
+                      {draft.condition !== "good" ? (
+                        <TextField
+                          label="Reason note"
+                          autoComplete="off"
+                          value={draft.reason_note}
+                          onChange={(value) =>
+                            update(line.id, { reason_note: value })
+                          }
+                          requiredIndicator
+                        />
+                      ) : null}
+                    </FormLayout>
+                  </BlockStack>
+                );
+              })}
+              <TextField
+                label="Note on this receipt"
+                autoComplete="off"
+                multiline={2}
+                value={note}
+                onChange={setNote}
+              />
+              <Button
+                submit
+                variant="primary"
+                loading={submitting}
+                disabled={progress.incoming <= 0}
+              >
+                Complete this receipt
+              </Button>
+            </BlockStack>
+          </Collapsible>
+        </BlockStack>
+      </Card>
     </Form>
   );
 }

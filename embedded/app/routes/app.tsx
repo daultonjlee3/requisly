@@ -38,7 +38,27 @@ export const links = () => [
 ];
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin, billing } = await authenticate.admin(request);
+  const url = new URL(request.url);
+  console.log("[app] authenticate start", {
+    hasIdToken: url.searchParams.has("id_token"),
+    hasShop: url.searchParams.has("shop"),
+    embedded: url.searchParams.get("embedded"),
+  });
+  let admin: Awaited<ReturnType<typeof authenticate.admin>>["admin"];
+  let billing: Awaited<ReturnType<typeof authenticate.admin>>["billing"];
+  try {
+    ({ admin, billing } = await authenticate.admin(request));
+  } catch (err) {
+    if (err instanceof Response) {
+      console.error("[app] authenticate response", err.status, err.statusText);
+    } else {
+      console.error(
+        "[app] authenticate error",
+        err instanceof Error ? err.message : err,
+      );
+    }
+    throw err;
+  }
   const developmentStore = await shopRequiresTestCharges(admin);
   // Live charges fail on partner/dev stores even when Vercel is production.
   const isTest = billingIsTest() || developmentStore;
@@ -108,6 +128,7 @@ export default function App() {
           </Link>
           <Link to="/app/purchase-orders">Purchase orders</Link>
           <Link to="/app/blankets">Blanket POs</Link>
+          <Link to="/app/contracts">Contracts</Link>
           <Link to="/app/quote-requests">Quote requests</Link>
           <Link to="/app/purchase-orders/new">New PO</Link>
           <Link to="/app/templates">Templates</Link>
@@ -144,6 +165,16 @@ export default function App() {
 
 export function ErrorBoundary() {
   const error = useRouteError();
+  // 401/410 are Shopify reauth signals. App Bridge only exits the iframe
+  // and retries token exchange when we render boundary.error — a custom
+  // card swallows the headers and leaves Admin stuck on "410 Gone".
+  if (
+    isRouteErrorResponse(error) &&
+    (error.status === 401 || error.status === 410)
+  ) {
+    return boundary.error(error);
+  }
+
   // ErrorBoundary runs in the browser — never touch process.env here
   // (Vite has no Node `process` global → "process is not defined").
   const message = isRouteErrorResponse(error)

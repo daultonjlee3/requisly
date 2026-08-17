@@ -597,6 +597,19 @@ export async function createQboItem(
   }
 }
 
+export async function getQboBill(
+  workspaceId: string,
+  billId: string,
+): Promise<Record<string, unknown>> {
+  const json = await qboFetch(
+    workspaceId,
+    `/bill/${encodeURIComponent(billId)}`,
+  );
+  const bill = json.Bill as Record<string, unknown> | undefined;
+  if (!bill?.Id) throw new QboApiError(`QuickBooks Bill ${billId} was not found.`);
+  return bill;
+}
+
 export async function createQboBill(
   workspaceId: string,
   bill: Record<string, unknown>,

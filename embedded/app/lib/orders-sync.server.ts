@@ -31,6 +31,8 @@ const ORDERS_QUERY = `#graphql
         tags
         note
         totalPriceSet { shopMoney { amount currencyCode } }
+        email
+        customer { id }
         lineItems(first: 50) {
           nodes {
             id
@@ -122,6 +124,8 @@ export async function syncShopifyOrdersGraphql(opts: {
             tags?: string[] | null;
             note?: string | null;
             totalPriceSet?: { shopMoney?: { amount?: string; currencyCode?: string } };
+            email?: string | null;
+            customer?: { id?: string | null } | null;
             lineItems?: {
               nodes: Array<{
                 id: string;
@@ -140,11 +144,18 @@ export async function syncShopifyOrdersGraphql(opts: {
 
     if (json.errors?.length) {
       const msg = json.errors.map((e) => e.message).join("; ");
-      if (/ACCESS_DENIED|not approved|read_orders|protected customer data/i.test(msg)) {
+      const ordersDenied = json.errors.some((e) =>
+        /ACCESS_DENIED|not approved|read_orders|protected customer data/i.test(e.message),
+      );
+      // Customer-field PCD denial can error while orders still return.
+      // Only abort the whole sync when the orders connection itself is missing.
+      if (ordersDenied && !json.data?.orders) {
         timer.end({ skippedMissingScope: true });
         return { orders: 0, lineItems: 0, skippedMissingScope: true };
       }
-      throw new Error(msg);
+      if (!json.data?.orders) {
+        throw new Error(msg);
+      }
     }
 
     const conn = json.data?.orders;
@@ -158,8 +169,13 @@ export async function syncShopifyOrdersGraphql(opts: {
         tags.includes("requisly_synthetic_test") ||
         Boolean(order.test) ||
         (order.note ?? "").includes("[REQUISLY_SYNTHETIC_TEST]");
-      // Intentionally omit customer email/name/phone/address — PCD request is
-      // Order resource + line economics only. GDPR redact uses orders_to_redact IDs.
+      // Order.email is PCD (no read_customers). customer.id needs
+      // read_customers — store when Shopify returns it, otherwise null.
+      // Never persist name, phone, or address.
+      const customerShopifyId = order.customer?.id
+        ? gidToNumericId(order.customer.id) || String(order.customer.id)
+        : null;
+      const customerEmail = order.email?.trim().toLowerCase() || null;
       const { data: upserted, error } = await supabase
         .from("shopify_orders")
         .upsert(
@@ -170,8 +186,8 @@ export async function syncShopifyOrdersGraphql(opts: {
             processed_at: order.processedAt,
             currency: order.totalPriceSet?.shopMoney?.currencyCode ?? "USD",
             total_price: Number.isFinite(total) ? total : 0,
-            customer_shopify_id: null,
-            customer_email: null,
+            customer_shopify_id: customerShopifyId,
+            customer_email: customerEmail,
             tags,
             note: order.note ?? null,
             is_synthetic_test: isSynthetic,

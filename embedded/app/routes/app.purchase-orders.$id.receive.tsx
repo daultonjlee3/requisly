@@ -32,7 +32,7 @@ export const action = async ({ request, params }: ActionFunctionArgs) => {
       lines,
       admin: merchant.admin,
     });
-    return merchant.redirect(`/app/purchase-orders/${poId}`);
+    return merchant.redirect(`/app/purchase-orders/${poId}?received=1`);
   } catch (err) {
     return {
       error: err instanceof Error ? err.message : "Failed to complete receipt",

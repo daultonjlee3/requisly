@@ -5,8 +5,7 @@ import {
   BillingInterval,
   shopifyApp,
 } from "@shopify/shopify-app-remix/server";
-import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
-import prisma from "./db.server";
+import { SupabaseSessionStorage } from "./lib/shopify-session-storage.server";
 
 /** Single flat plan — everything included, no tiers. */
 export const REQUISLY_PLAN = "Requisly";
@@ -18,14 +17,14 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl: process.env.SHOPIFY_APP_URL || "",
   authPathPrefix: "/auth",
-  sessionStorage: new PrismaSessionStorage(prisma),
+  sessionStorage: new SupabaseSessionStorage(),
   distribution: AppDistribution.AppStore,
   billing: {
     [REQUISLY_PLAN]: {
       trialDays: 14,
       lineItems: [
         {
-          amount: 99,
+          amount: 149,
           currencyCode: "USD",
           interval: BillingInterval.Every30Days,
         },
