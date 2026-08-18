@@ -68,6 +68,10 @@ export default function MarketingHomePage() {
             <Link href="/privacy" style={{ color: "#5c5c5c" }}>
               Privacy Policy
             </Link>
+            {" · "}
+            <Link href="/terms" style={{ color: "#5c5c5c" }}>
+              Terms of Service
+            </Link>
           </p>
         </div>
       </div>

@@ -229,6 +229,8 @@ export default function PrivacyPolicyPage() {
         </Section>
 
         <p style={{ marginTop: 40, fontSize: 14, color: "#5c5c5c" }}>
+          <Link href="/terms">Terms of Service</Link>
+          {" · "}
           <Link href="/">← Back to Requisly</Link>
         </p>
       </article>
