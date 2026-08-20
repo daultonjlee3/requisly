@@ -105,6 +105,77 @@ export function buildPoReplyConfirmEmail(opts: {
   return { subject, html, text };
 }
 
+export function buildPoReplyAutoAppliedEmail(opts: {
+  poNumber: string;
+  workspaceName: string;
+  parsed: PoReplyParse;
+  lines: PoReplyLine[];
+  undoHours: number;
+  correctUrl: string | null;
+}): { subject: string; html: string; text: string } {
+  const po = opts.poNumber.trim() || "PO";
+  const subject = `We updated ${po} based on your reply`;
+  const interpretation = opts.parsed.confirmAsIs
+    ? "Confirmed the order as written, with no line changes."
+    : opts.parsed.changes.map((c) => formatChange(c, opts.lines)).join("\n");
+  const ship = opts.parsed.shipDate
+    ? `Requested ship date: ${opts.parsed.shipDate}`
+    : "";
+  const windowLabel =
+    opts.undoHours === 1 ? "1 hour" : `${opts.undoHours} hours`;
+
+  const html = wrap(`
+    <p style="margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:${INK_FAINT}">${escapeHtml(opts.workspaceName)}</p>
+    <h1 style="margin:0 0 12px;font-size:22px;line-height:1.25">We updated ${escapeHtml(po)} based on your reply</h1>
+    <p style="margin:0 0 16px;font-size:14px;line-height:1.5;color:${INK_FAINT}">${escapeHtml(opts.parsed.summary)}</p>
+    <p style="margin:0 0 16px;font-size:14px;line-height:1.5;white-space:pre-wrap">${escapeHtml(interpretation)}${ship ? `\n${escapeHtml(ship)}` : ""}</p>
+    <p style="margin:0 0 8px;font-size:14px;line-height:1.5">Reply <strong>UNDO</strong> within ${escapeHtml(windowLabel)} if that's wrong.</p>
+    ${
+      opts.correctUrl
+        ? `<p style="margin:12px 0 0;font-size:13px;line-height:1.5"><a href="${escapeAttr(opts.correctUrl)}" style="color:${ACCENT}">Open the order page →</a></p>`
+        : ""
+    }
+  `);
+
+  const text = [
+    `We updated ${po} based on your reply:`,
+    opts.parsed.summary,
+    interpretation,
+    ship,
+    "",
+    `Reply UNDO within ${windowLabel} if that's wrong.`,
+    opts.correctUrl ? `Order page: ${opts.correctUrl}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return { subject, html, text };
+}
+
+export function buildPoReplyUndoUnavailableEmail(opts: {
+  poNumber: string;
+  workspaceName: string;
+  supplierLinkUrl: string | null;
+  reason: string;
+}): { subject: string; html: string; text: string } {
+  const po = opts.poNumber.trim() || "PO";
+  const subject = `Nothing to undo on ${po}`;
+  const link = opts.supplierLinkUrl;
+  const html = wrap(`
+    <p style="margin:0 0 8px;font-size:11px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase;color:${INK_FAINT}">${escapeHtml(opts.workspaceName)}</p>
+    <h1 style="margin:0 0 12px;font-size:22px;line-height:1.25">Nothing to undo</h1>
+    <p style="margin:0 0 16px;font-size:14px;line-height:1.5;color:${INK_FAINT}">${escapeHtml(opts.reason)} Use the order link if you still need to change ${escapeHtml(po)}.</p>
+    ${link ? button(link, "Open your order") : ""}
+  `);
+  const text = [
+    opts.reason,
+    link ? `Open your order: ${link}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+  return { subject, html, text };
+}
+
 export function buildPoReplyUnparsedEmail(opts: {
   poNumber: string;
   workspaceName: string;
