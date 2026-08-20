@@ -21,8 +21,10 @@ const ibmPlexMono = IBM_Plex_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Requisly",
-  description: "Purchase-order platform for Shopify brands",
+  metadataBase: new URL("https://requisly.com"),
+  title: "Requisly — The procurement platform for Shopify brands",
+  description:
+    "Requisly lets a supplier confirm a purchase order from a link, without creating an account.",
 };
 
 export default function RootLayout({

@@ -1,12 +1,13 @@
-import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { pageMetadata } from "@/lib/site";
 
-export const metadata: Metadata = {
+export const metadata = pageMetadata({
   title: "Terms of Service — Requisly",
   description:
     "Terms of Service for the Requisly Shopify app for purchase orders and supplier management.",
-};
+  path: "/terms",
+});
 
 export default function TermsOfServicePage() {
   return (

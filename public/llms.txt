@@ -1,0 +1,17 @@
+# Requisly
+
+> The procurement platform for Shopify brands — POs your suppliers actually confirm.
+
+Requisly lets a supplier confirm a purchase order from a link, without creating an account. It is a Shopify-embedded purchase order and supplier management app. Merchants create, send, and track purchase orders inside Shopify Admin; suppliers confirm, propose changes, or update status from a unique Supplier Link. Optional QuickBooks Online. AI insights are included and do not auto-send purchase orders.
+
+Price: USD $149/month, 14-day free trial, billed through Shopify Billing.
+
+## Pages
+
+- [Home](https://requisly.com/): Product overview, features, pricing, and FAQ
+- [Privacy Policy](https://requisly.com/privacy): How Requisly processes merchant and order data
+- [Terms of Service](https://requisly.com/terms): Terms governing use of the Requisly Shopify app
+
+## Contact
+
+support@requisly.com

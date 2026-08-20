@@ -1,12 +1,13 @@
-import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { pageMetadata } from "@/lib/site";
 
-export const metadata: Metadata = {
+export const metadata = pageMetadata({
   title: "Privacy Policy — Requisly",
   description:
     "How Requisly processes merchant and order data for Shopify procurement and inventory reporting.",
-};
+  path: "/privacy",
+});
 
 const updated = "August 16, 2026";
 

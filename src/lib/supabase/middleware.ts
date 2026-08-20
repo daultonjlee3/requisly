@@ -42,6 +42,9 @@ export async function updateSession(request: NextRequest) {
     path === "/" ||
     path === "/privacy" ||
     path === "/terms" ||
+    path === "/llms.txt" ||
+    path === "/robots.txt" ||
+    path === "/sitemap.xml" ||
     path.startsWith("/login") ||
     path.startsWith("/signup") ||
     path.startsWith("/invite/") ||
